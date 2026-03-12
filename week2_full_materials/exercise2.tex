@@ -1,0 +1,353 @@
+\documentclass[12pt, a4paper]{article}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{mdframed}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{ctex}
+\geometry{margin=2.5cm}
+
+\newcounter{probcnt}
+\setcounter{probcnt}{0}
+
+\newenvironment{problem}[1][]{%
+  \stepcounter{probcnt}
+  \begin{mdframed}[linecolor=black!30, backgroundcolor=gray!4,
+    innertopmargin=8pt, innerbottommargin=8pt,
+    innerleftmargin=10pt, innerrightmargin=10pt,
+    skipabove=10pt, skipbelow=4pt]
+  \noindent\textbf{题 \theprobcnt}\ifx&#1&\else\ \textbf{[#1]}\fi\quad
+}{%
+  \end{mdframed}
+}
+
+\newenvironment{subproblems}{%
+  \begin{enumerate}[label=(\alph*), leftmargin=1.5em, topsep=4pt, itemsep=2pt]
+}{%
+  \end{enumerate}
+}
+
+\newcommand{\hint}[1]{\smallskip\noindent\textit{提示：#1}}
+\newcommand{\context}[1]{\smallskip\noindent\textcolor{gray}{\small \textbf{背景：}#1}\smallskip}
+
+\title{\textbf{第2讲：凸优化与KKT条件\\习题集（实践向）}}
+\author{优化算法课程}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+% -------------------------------------------------------
+\begin{problem}[$\star$ 计算]
+\textbf{机器学习损失函数的凸性判断}
+
+\context{在设计学习算法时，损失函数是否为凸函数直接决定了梯度下降能否收敛到全局最优。}
+
+判断以下函数是否为凸函数（请用二阶条件，写出导数过程）：
+
+\begin{subproblems}
+  \item \textbf{逻辑回归损失}：$f(x) = \log(1 + e^x)$，$x \in \mathbb{R}$
+  \item \textbf{带正则的二次损失}：$f(x) = \|Ax - b\|_2^2 + \lambda \|x\|_2^2$，
+        其中 $A \in \mathbb{R}^{m \times n}$，$\lambda > 0$；写出Hessian并判断正半定性。
+  \item \textbf{负对数似然（多元高斯）}：$f(X) = -\log\det(X)$，$X \in \mathbb{S}_{++}^n$；
+        说明为何此函数是协方差矩阵估计中的核心。
+  \item \textbf{非凸陷阱}：$f(x_1, x_2) = x_1^2 - x_2^2$；指出其鞍点位置，并解释为何
+        神经网络优化中大量存在此类结构。
+\end{subproblems}
+\end{problem}
+
+% -------------------------------------------------------
+\begin{problem}[$\star$ 概念]
+\textbf{可行域的凸性分析}
+
+\context{约束优化问题的可行域是否为凸集，直接影响求解器（如 CVXPY、Gurobi）能否保证找到全局最优。}
+
+判断以下集合是否为凸集；若不是，给出反例并说明对优化求解的影响：
+
+\begin{subproblems}
+  \item \textbf{功率预算约束}：$\{x \in \mathbb{R}^n : \|x\|_2 \leq P\}$（总发射功率限制）
+  \item \textbf{布尔松弛域}：$\{x \in \mathbb{R}^n : 0 \leq x_i \leq 1,\ \forall i\}$
+        （整数规划的LP松弛可行域）
+  \item \textbf{归一化非负分配}：$\{x \in \mathbb{R}^n : \mathbf{1}^\top x = 1,\ x \geq 0\}$（概率单纯形）
+  \item \textbf{协方差矩阵集合}：$\{X \in \mathbb{R}^{n \times n} : X = X^\top,\ X \succeq 0\}$
+        （半正定锥，协方差估计的自然约束）
+\end{subproblems}
+\end{problem}
+
+% -------------------------------------------------------
+\begin{problem}[$\star\star$ 证明]
+\textbf{凸性保持运算：模型组合的理论基础}
+
+\context{深度学习中常见操作（如 $\max$-pooling、逐点ReLU后的损失、仿射变换后接凸损失）之所以保持凸性，源于以下一般性结论。}
+
+证明下列命题：
+
+\begin{subproblems}
+  \item 若 $f_1, f_2$ 均为凸函数，则 $g(x) = \max\{f_1(x), f_2(x)\}$ 也是凸函数。
+        （对应：多类分类中 hinge loss 对各类得分取最大值的操作）
+  \item 若 $f$ 是凸函数，$A$ 是矩阵，$b$ 是向量，则 $g(x) = f(Ax + b)$ 也是凸函数。
+        （对应：线性层 $Ax+b$ 接凸损失，整体仍为凸）
+  \item 若 $f(x, y)$ 关于 $(x, y)$ 联合凸，则 $g(x) = \inf_y f(x, y)$ 关于 $x$ 是凸函数。
+        （对应：消去隐变量后目标仍凸——EM算法下界凸性的基础）
+\end{subproblems}
+\end{problem}
+
+% -------------------------------------------------------
+\begin{problem}[$\star\star$ 概念+应用]
+\textbf{Jensen不等式与变分自编码器（VAE）的ELBO}
+
+\context{变分推断的核心是用一个易处理的分布 $q(z|x)$ 近似真实后验 $p(z|x)$。
+Jensen不等式给出了对数似然 $\log p(x)$ 的下界，即ELBO（Evidence Lower BOund），
+这是VAE训练目标的理论依据。}
+
+\begin{subproblems}
+  \item 陈述Jensen不等式，并证明：对凸函数 $f$ 和随机变量 $Z$，有
+        $f(\mathbb{E}[Z]) \leq \mathbb{E}[f(Z)]$。
+
+  \item 利用Jensen不等式，对 $-\log$（凸函数）推导以下不等式：
+        \[
+          \log p(x) = \log \mathbb{E}_{q(z|x)}\!\left[\frac{p(x,z)}{q(z|x)}\right]
+          \;\geq\; \mathbb{E}_{q(z|x)}\!\left[\log \frac{p(x,z)}{q(z|x)}\right]
+          =: \mathrm{ELBO}(q)
+        \]
+        指出等号成立的条件。
+
+  \item 将ELBO改写为
+        $\mathrm{ELBO}(q) = \mathbb{E}_{q}[\log p(x|z)] - D_{\mathrm{KL}}(q(z|x)\,\|\,p(z))$，
+        并解释两项分别对应VAE的哪个训练目标（重建误差 vs. 正则化）。
+\end{subproblems}
+\end{problem}
+
+% -------------------------------------------------------
+\begin{problem}[$\star\star$ 计算]
+\textbf{资源分配中的KKT条件}
+
+\context{考虑将单位总算力分配给 $n$ 个任务，第 $i$ 个任务分得算力 $x_i$ 时产生效用 $u_i(x_i)$。
+当效用函数为严格凹函数时，最优分配由KKT条件完全刻画。}
+
+具体地，求解以下问题，要求\textbf{写出完整KKT条件}（稳定性、原始可行性、对偶可行性、互补松弛）并求出 $x^*$ 和所有对偶变量：
+\[
+  \min_{x \in \mathbb{R}^2} \quad (x_1 - 1)^2 + (x_2 - 2)^2
+  \quad \text{s.t.} \quad x_1 + x_2 \leq 2,\quad x_1 \geq 0,\quad x_2 \geq 0
+\]
+
+\begin{subproblems}
+  \item 写出Lagrangian $L(x, \lambda)$，引入乘子 $\lambda_1$（对应 $x_1+x_2\leq 2$），
+        $\lambda_2$（对应 $-x_1 \leq 0$），$\lambda_3$（对应 $-x_2 \leq 0$）。
+  \item 列出全部KKT条件。
+  \item 通过枚举互补松弛的活跃约束组合，求解 $x^*$、$\lambda_1^*$、$\lambda_2^*$、$\lambda_3^*$。
+  \item 验证互补松弛条件均满足，并给出经济学直觉：哪条约束是"紧的"，其对偶变量的正值代表什么？
+\end{subproblems}
+\end{problem}
+
+% -------------------------------------------------------
+\begin{problem}[$\star\star$ 推导]
+\textbf{岭回归的Lagrange对偶与正则化解释}
+
+\context{岭回归（Ridge Regression）既可以写成带 $\ell_2$ 惩罚的无约束问题，也等价于一个带范数约束的最小二乘问题。
+两种形式通过Lagrange对偶联系，正则化系数 $\lambda$ 正好是约束的"影子价格"。}
+
+考虑带等式约束的二次规划：
+\[
+  \min_{x \in \mathbb{R}^n} \quad \tfrac{1}{2}x^\top Q x + c^\top x \quad \text{s.t.} \quad Ax = b,
+  \quad Q \succ 0
+\]
+
+\begin{subproblems}
+  \item 写出Lagrangian $L(x, \nu)$，对 $x$ 求极小（令 $\nabla_x L = 0$），
+        得到最优 $x^*(\nu)$ 关于对偶变量 $\nu$ 的解析表达式。
+  \item 将 $x^*(\nu)$ 代回，得到对偶函数 $g(\nu)$；写出对偶问题并化简。
+  \item 说明强对偶性成立的依据（Slater条件），并指出对偶变量 $\nu^*$ 的统计含义
+        （在普通线性回归 $Q=A^\top A$，$c=-A^\top b$ 的特殊情形下说明）。
+\end{subproblems}
+\end{problem}
+
+% -------------------------------------------------------
+\begin{problem}[$\star\star$ 综合推导]
+\textbf{支持向量机（SVM）对偶推导与支持向量的几何意义}
+
+\context{SVM是凸二次规划的经典应用。其对偶形式不仅降低了问题维度（从特征维 $d$ 降到样本数 $m$），
+更揭示了分类边界只由少数"支持向量"决定这一核心几何直觉。}
+
+原问题：
+\[
+  \min_{w, b} \quad \tfrac{1}{2}\|w\|^2 \quad \text{s.t.} \quad y_i(w^\top x_i + b) \geq 1,
+  \quad i = 1, \ldots, m
+\]
+
+\begin{subproblems}
+  \item 写出Lagrangian $L(w, b, \alpha)$，对 $w$ 和 $b$ 分别求导令其为零，
+        得到 $w = \sum_i \alpha_i y_i x_i$ 及关于 $b$ 的条件。
+  \item 将上述结果代回，推导出对偶问题：
+        \[
+          \max_{\alpha \geq 0} \quad \sum_i \alpha_i - \tfrac{1}{2}\sum_{i,j}\alpha_i\alpha_j y_i y_j x_i^\top x_j
+          \quad \text{s.t.} \quad \sum_i \alpha_i y_i = 0
+        \]
+  \item 利用互补松弛条件 $\alpha_i[y_i(w^\top x_i + b) - 1] = 0$ 解释：
+        为何只有"压在间隔边界上"的样本才有 $\alpha_i > 0$？这些样本称为支持向量。
+  \item 手算：给定 $x_1=(1,0),y_1=+1$；$x_2=(0,1),y_2=+1$；$x_3=(-1,0),y_3=-1$，
+        求 $w^*$，$b^*$ 和 $\alpha^*$，并画出分类超平面示意图。
+\end{subproblems}
+\end{problem}
+
+% -------------------------------------------------------
+\begin{problem}[$\star\star\star$ 综合]
+\textbf{带风险约束的投资组合优化（QCQP）}
+
+\context{Markowitz均值-方差模型是金融优化的基石。当引入"最大波动率"约束时，
+问题升级为带二次约束的二次规划（QCQP）。分析其对偶揭示了"风险预算"的影子价格。}
+
+考虑以下QCQP（$\Sigma \succ 0$ 为协方差矩阵，$\mu$ 为期望收益向量）：
+\[
+  \min_{w \in \mathbb{R}^n} \quad w^\top \Sigma w \quad \text{s.t.} \quad
+  \mu^\top w \geq r_{\min},\quad \mathbf{1}^\top w = 1,\quad w \geq 0
+\]
+
+\begin{subproblems}
+  \item 写出Lagrangian $L(w, \lambda, \nu, \gamma)$，列出KKT条件（稳定性条件需写出矩阵形式）。
+  \item 证明对偶函数 $g(\lambda, \nu, \gamma)$ 是关于 $(\lambda, \nu, \gamma)$ 的凹函数。
+  \item 设 $n=2$，$\Sigma = \begin{pmatrix}1 & 0.5 \\ 0.5 & 2\end{pmatrix}$，
+        $\mu = (0.1, 0.2)^\top$，$r_{\min} = 0.12$。
+        手算最优权重 $w^*$ 和对偶变量 $\lambda^*$（收益约束的乘子）。
+  \item 解释"影子价格"：若 $r_{\min}$ 从 $0.12$ 提高到 $0.12 + \epsilon$，
+        最优方差（目标值）将如何变化？用 $\lambda^*$ 给出近似表达式。
+\end{subproblems}
+\end{problem}
+
+% -------------------------------------------------------
+\begin{problem}[$\star\star\star$ 证明+应用]
+\textbf{弱对偶定理与电力网络的输电容量定价}
+
+\context{在电力系统最优潮流（OPF）问题中，输电线路容量约束对应的对偶变量称为"边际阻塞成本"（Locational Marginal Price, LMP）。弱对偶定理保证了LMP是发电成本的有效下界，强对偶（在凸OPF下成立）则保证这个下界是紧的。}
+
+\begin{subproblems}
+  \item \textbf{证明弱对偶定理}：对一般优化问题
+        \[
+          p^* = \min_x f(x) \quad \text{s.t.} \quad g_i(x) \leq 0,\ h_j(x) = 0
+        \]
+        设Lagrangian为 $L(x,\lambda,\nu) = f(x) + \sum_i \lambda_i g_i(x) + \sum_j \nu_j h_j(x)$，
+        对偶函数 $g(\lambda,\nu) = \inf_x L(x,\lambda,\nu)$。
+        利用 $\lambda \geq 0$ 与 $g_i(x) \leq 0$，严格证明对所有对偶可行 $(\lambda, \nu)$ 有
+        $g(\lambda, \nu) \leq p^*$，从而 $d^* \leq p^*$。
+
+  \item \textbf{对偶间隙与凸性的关系}：
+        \begin{enumerate}[label=(\roman*)]
+          \item 给出一个非凸问题的简单例子，使得对偶间隙 $p^* - d^* > 0$。
+          \item 陈述Slater条件，解释为何对凸问题它保证强对偶（$p^* = d^*$）。
+        \end{enumerate}
+
+  \item \textbf{影子价格的精确表述}：设 $p^*(\epsilon)$ 是约束松弛为 $g_i(x) \leq \epsilon_i$
+        后的最优值函数。在强对偶和适当光滑性假设下，证明
+        \[
+          \frac{\partial p^*}{\partial \epsilon_i}\bigg|_{\epsilon=0} = -\lambda_i^*
+        \]
+        并用电力市场语言解释：$\lambda_i^*$ 为什么代表"放松第 $i$ 条输电线路容量一个单位
+        所节省的发电成本"。
+\end{subproblems}
+\end{problem}
+
+% -------------------------------------------------------
+\begin{problem}[$\star\star\star$ 推导+计算]
+\textbf{马尔可夫决策过程（MDP）的线性规划对偶}
+
+\context{强化学习的理论基础之一是：值函数迭代（Value Iteration）本质上在求解一个线性规划，
+而该LP的对偶问题恰好对应"状态-动作占用度量"（occupancy measure）的最优化。
+理解这一对偶关系，是连接经典DP、线性规划与现代深度强化学习的关键桥梁。}
+
+考虑有限状态、有限动作的折扣MDP，记为 $(\mathcal{S}, \mathcal{A}, P, r, \gamma)$：
+\begin{itemize}[topsep=2pt, itemsep=1pt]
+  \item $\mathcal{S} = \{1,\ldots,S\}$：状态空间；$\mathcal{A} = \{1,\ldots,A\}$：动作空间
+  \item $P(s'|s,a)$：转移概率；$r(s,a) \in \mathbb{R}$：即时奖励；$\gamma \in [0,1)$：折扣因子
+  \item $\rho(s)$：初始状态分布，$\rho(s) > 0$
+\end{itemize}
+
+\begin{subproblems}
+
+  \item \textbf{原始LP（Primal LP）——值函数视角}
+
+  Bellman最优方程要求对所有 $s \in \mathcal{S}$：
+  \[
+    V(s) = \max_{a \in \mathcal{A}} \left[ r(s,a) + \gamma \sum_{s'} P(s'|s,a) V(s') \right]
+  \]
+  将此写成线性规划：
+  \[
+    \min_{V \in \mathbb{R}^S} \quad \sum_s \rho(s) V(s)
+    \quad \text{s.t.} \quad V(s) \geq r(s,a) + \gamma \sum_{s'} P(s'|s,a) V(s'),
+    \quad \forall s \in \mathcal{S},\ a \in \mathcal{A}
+  \]
+  \begin{enumerate}[label=(\roman*), topsep=2pt, itemsep=1pt]
+    \item 说明决策变量数目和约束数目（分别用 $S, A$ 表示）。
+    \item 证明：上述LP的最优解 $V^*$ 恰好是Bellman最优方程的解（即最优值函数）。
+          \hint{设 $V^*_{\text{LP}}$ 是LP最优解，$V^*$ 是Bellman方程的解，
+          分别证明 $V^*_{\text{LP}} \leq V^*$ 和 $V^*_{\text{LP}} \geq V^*$。}
+  \end{enumerate}
+
+  \item \textbf{对偶LP（Dual LP）——占用度量视角}
+
+  引入对偶变量 $d(s,a) \geq 0$（对应每条约束 $V(s) \geq r(s,a) + \cdots$），写出原始LP的对偶问题：
+  \[
+    \max_{d \geq 0} \quad \sum_{s,a} r(s,a)\, d(s,a)
+    \quad \text{s.t.} \quad
+    \sum_a d(s,a) - \gamma \sum_{s',a'} P(s|s',a')\, d(s',a') = \rho(s),
+    \quad \forall s \in \mathcal{S}
+  \]
+  \begin{enumerate}[label=(\roman*), topsep=2pt, itemsep=1pt]
+    \item 推导该对偶问题（从Lagrangian出发，对 $V$ 求极小并整理）。
+    \item 证明弱对偶：原始LP目标值 $\geq$ 对偶LP目标值（即 $\sum_s \rho(s) V(s) \geq \sum_{s,a} r(s,a) d(s,a)$
+          对任意原始可行 $V$ 和对偶可行 $d$ 均成立）。
+    \item 指出强对偶成立的条件，并说明此时 $d^*(s,a)$ 的概率论含义：
+          \[
+            d^*(s,a) = \sum_{t=0}^{\infty} \gamma^t \Pr(s_t = s,\ a_t = a \mid \pi^*,\ s_0 \sim \rho)
+          \]
+          解释 $d^*(s,a)$ 为何称为"折扣状态-动作占用度量"。
+  \end{enumerate}
+
+  \item \textbf{互补松弛与最优策略提取}
+
+  设原始LP最优解为 $V^*$，对偶LP最优解为 $d^*$，写出互补松弛条件：
+  \[
+    d^*(s,a)\left[V^*(s) - r(s,a) - \gamma \sum_{s'} P(s'|s,a) V^*(s')\right] = 0,
+    \quad \forall s, a
+  \]
+  \begin{enumerate}[label=(\roman*), topsep=2pt, itemsep=1pt]
+    \item 解释互补松弛的含义：若 $d^*(s,a) > 0$（该状态-动作对"被访问"），
+          则对应的Bellman约束必须以等号成立，即动作 $a$ 在状态 $s$ 下是最优的。
+    \item 由此给出从 $d^*$ 中提取最优策略 $\pi^*$ 的方法：
+          \[
+            \pi^*(a|s) = \frac{d^*(s,a)}{\sum_{a'} d^*(s,a')}
+          \]
+          说明为何这与直接从 $V^*$ 贪心提取策略等价。
+  \end{enumerate}
+
+  \item \textbf{小型手算}
+
+  考虑一个两状态（$s_1, s_2$）、两动作（$a_1, a_2$）的MDP，$\gamma = 0.9$，$\rho = (0.5, 0.5)$：
+
+  \begin{center}
+  \begin{tabular}{ccccc}
+    \toprule
+    状态 & 动作 & $r(s,a)$ & $P(s_1|s,a)$ & $P(s_2|s,a)$ \\
+    \midrule
+    $s_1$ & $a_1$ & $1$ & $0.8$ & $0.2$ \\
+    $s_1$ & $a_2$ & $0$ & $0.1$ & $0.9$ \\
+    $s_2$ & $a_1$ & $0$ & $0.5$ & $0.5$ \\
+    $s_2$ & $a_2$ & $2$ & $0.3$ & $0.7$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+
+  \begin{enumerate}[label=(\roman*), topsep=4pt, itemsep=2pt]
+    \item 写出原始LP的4个约束（$S \times A = 2 \times 2$），未知量为 $(V_1, V_2)$。
+    \item 通过值迭代（Value Iteration）迭代至收敛（误差 $< 0.01$），得到近似 $V^*(s_1)$，$V^*(s_2)$。
+    \item 对应写出对偶LP，求解最优占用度量 $d^*(s_1,a_1)$，$d^*(s_1,a_2)$，
+          $d^*(s_2,a_1)$，$d^*(s_2,a_2)$。
+    \item 验证互补松弛条件，并提取最优策略 $\pi^*$。
+  \end{enumerate}
+
+\end{subproblems}
+\end{problem}
+
+\end{document}
