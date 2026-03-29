@@ -309,7 +309,7 @@ Transformer推理时，一个注意力头的计算为 $((QK^\top)V)W_O$，
 
     \begin{enumerate}[i.]
         \item 贪心解码给出的序列是什么？总概率是多少？
-        \item 再计算序列 $\texttt{BAB}$ 的总概率，并据此说明贪心解码\textbf{不一定}给出全局最优解。
+        \item 通过枚举，找到概率最高的序列（长度3），证明贪心解码\textbf{不一定}给出全局最优解。
     \end{enumerate}
 
     \item 经典\textbf{TSP状压DP}（旅行商问题）：$n$ 个城市，$dp[S][v]$ 表示
