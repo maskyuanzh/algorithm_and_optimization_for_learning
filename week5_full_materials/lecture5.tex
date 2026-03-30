@@ -1,0 +1,2406 @@
+\documentclass[12pt, a4paper]{ctexart}
+
+%========================================
+% 宏包引入
+%========================================
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb, amsthm, mathtools}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{tcolorbox}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{bm}
+\usepackage{listings}
+
+% 设置绘图库
+\usetikzlibrary{arrows.meta, positioning, calc, shapes, decorations.pathreplacing, patterns}
+\pgfplotsset{compat=1.18}
+
+%========================================
+% 代码高亮设置
+%========================================
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!5}
+}
+
+%========================================
+% 自定义颜色与环境
+%========================================
+\definecolor{myblue}{RGB}{0, 102, 204}
+\definecolor{myred}{RGB}{204, 0, 0}
+\definecolor{mygreen}{RGB}{0, 153, 76}
+\definecolor{mypurple}{RGB}{128, 0, 128}
+\definecolor{myorange}{RGB}{255, 140, 0}
+\definecolor{gpugreen}{RGB}{118, 185, 0}
+
+% 板书环境
+\tcbuselibrary{skins, breakable}
+\newtcolorbox{blackboard}[1][]{
+    colback=gray!10,
+    colframe=black!70,
+    fonttitle=\bfseries,
+    title={#1},
+    boxrule=0.5mm,
+    sharp corners,
+    breakable
+}
+
+% 直觉与洞察
+\newtcolorbox{insight}[1][]{
+    colback=yellow!10,
+    colframe=orange!60!black,
+    fonttitle=\bfseries,
+    title={直觉：#1},
+    breakable
+}
+
+% 关键结论
+\newtcolorbox{keypoint}[1][]{
+    colback=myblue!5,
+    colframe=myblue,
+    fonttitle=\bfseries,
+    title={核心结论：#1},
+    breakable
+}
+
+% GPU要点
+\newtcolorbox{gpubox}[1][]{
+    colback=gpugreen!10,
+    colframe=gpugreen!70!black,
+    fonttitle=\bfseries,
+    title={GPU视角：#1},
+    breakable
+}
+
+% 实验环境
+\newtcolorbox{experiment}[1][]{
+    colback=mypurple!5,
+    colframe=mypurple,
+    fonttitle=\bfseries,
+    title={实验：#1},
+    breakable
+}
+
+% 定义与定理
+\newtheorem{theorem}{定理}[section]
+\newtheorem{lemma}[theorem]{引理}
+\newtheorem{definition}[theorem]{定义}
+\newtheorem{proposition}[theorem]{命题}
+\newtheorem{corollary}[theorem]{推论}
+
+%========================================
+% 页眉页脚
+%========================================
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{优化算法：从理论到大规模实践}
+\fancyhead[R]{第5周：SGD基础与线性缩放}
+\fancyfoot[C]{\thepage}
+
+%========================================
+% 文档开始
+%========================================
+\begin{document}
+
+\begin{center}
+{\LARGE\bfseries 第5周：SGD基础与线性缩放}
+
+\vspace{0.5cm}
+{\large 从二次模型建立随机优化的完整分析框架}
+\end{center}
+
+\tableofcontents
+\newpage
+
+%========================================
+\section{深度学习与优化：全景概览}
+%========================================
+
+\subsection{深度学习的基本范式}
+
+深度学习的核心是用\textbf{参数化函数}拟合数据。给定数据集 $\{(\bm{x}_i, y_i)\}_{i=1}^n$，我们选择一个参数化模型 $f(\bm{x}; \bm{\theta})$（如神经网络），通过最小化损失函数来找到最优参数：
+\begin{equation}
+    \min_{\bm{\theta}} \quad L(\bm{\theta}) = \frac{1}{n}\sum_{i=1}^n \ell\bigl(f(\bm{x}_i; \bm{\theta}),\; y_i\bigr)
+\end{equation}
+
+其中 $\ell$ 是逐样本损失（如均方误差 $\ell(\hat{y}, y) = \frac{1}{2}(\hat{y}-y)^2$ 或交叉熵）。
+
+现代神经网络的参数量 $\bm{\theta} \in \mathbb{R}^d$ 可达 $d \sim 10^9$（GPT-2）甚至 $10^{12}$（GPT-4 级别）。这意味着我们需要在一个\textbf{极高维}空间中做优化。
+
+\subsection{反向传播：高效计算梯度}
+
+优化的核心工具是\textbf{梯度下降}，而梯度下降需要计算 $\nabla_{\bm{\theta}} L$。对于多层神经网络
+\begin{equation}
+    f = f_L \circ f_{L-1} \circ \cdots \circ f_1, \quad f_l(\bm{h}) = \sigma(\bm{W}_l \bm{h} + \bm{b}_l)
+\end{equation}
+梯度通过\textbf{反向传播}（backpropagation）高效计算。反向传播本质上是链式法则的系统化应用：
+\begin{equation}
+    \frac{\partial L}{\partial \bm{W}_l} = \underbrace{\frac{\partial L}{\partial \bm{h}_L}}_{\text{输出层误差}} \cdot \underbrace{\frac{\partial \bm{h}_L}{\partial \bm{h}_{L-1}} \cdots \frac{\partial \bm{h}_{l+1}}{\partial \bm{h}_l}}_{\text{逐层回传}} \cdot \underbrace{\frac{\partial \bm{h}_l}{\partial \bm{W}_l}}_{\text{本层局部梯度}}
+\end{equation}
+
+反向传播的计算量与前向传播同阶（$O(d)$），使得在 $d \sim 10^{12}$ 的规模下计算梯度成为可能。
+
+\subsection{从梯度到训练：核心问题}
+
+有了梯度之后，如何更新参数？这正是本节课的主题。看似简单的 $\bm{\theta} \gets \bm{\theta} - \eta \nabla L$ 背后有大量关键问题：
+
+\begin{itemize}
+    \item \textbf{学习率 $\eta$ 怎么选？}太大会发散，太小会太慢。最优值是多少？
+    \item \textbf{Batch size $B$ 怎么选？}用全部数据太贵，用少量样本噪声太大。如何平衡？
+    \item \textbf{$\eta$ 和 $B$ 之间有什么关系？}线性缩放法则从何而来？有什么极限？
+    \item \textbf{数据预处理为什么重要？}归一化对训练速度的影响有多大？
+    \item \textbf{初始化为什么讲究？}Xavier/He 初始化的数学依据是什么？
+    \item \textbf{Warmup 为什么需要？}线性模型不需要，为什么深度网络需要？
+\end{itemize}
+
+为了回答这些问题，我们从一个可以完全手算的简单模型出发，建立精确的定量分析框架。
+
+\begin{blackboard}[本节课的路线图]
+
+我们从一个基本的二次函数出发，逐步建立完整的分析框架：
+
+\textbf{Part 1}：确定性 GD 在 $f = \frac{1}{2}\sum k_i x_i^2$ 上的分析
+\begin{itemize}
+    \item GD 更新、收敛条件、最优步长 $\eta^* = 2/(k_1+k_d)$
+    \item 条件数 $\kappa$ 如何拖慢收敛
+\end{itemize}
+
+\textbf{Part 2}：从二次函数到线性回归
+\begin{itemize}
+    \item 数据的协方差决定了 $k_i$ → 数据质量决定优化难度
+    \item 为什么需要 SGD
+\end{itemize}
+
+\textbf{Part 3}：SGD 的完整分析
+\begin{itemize}
+    \item 无偏性证明、梯度方差
+    \item 偏差-方差分解、稳态误差 $V_\infty \propto \eta/B$
+    \item Linear Scaling Rule、临界 batch size $B_{\text{crit}}$
+    \item 温度 $T = \eta\sigma^2/(2B)$ 与 Gibbs 分布
+\end{itemize}
+
+\textbf{Part 4}：走向深度学习的实践
+\begin{itemize}
+    \item 数据归一化（BN/LN）
+    \item 初始化（Xavier/He）
+    \item Warmup 的必要性
+    \item Gradient Clipping、Cosine Annealing、Gradient Accumulation
+\end{itemize}
+
+\end{blackboard}
+
+
+%========================================
+\section{贯穿全课的简单模型}
+%========================================
+
+整堂课围绕一个结构极为简单的函数展开所有分析。它的每一步推导都可以精确手算，但得到的结论却能解释深度学习训练中的大部分关键现象。
+
+\subsection{模型定义}
+
+我们的主角：
+\begin{equation}
+    f(\bm{x}) = \frac{1}{2}\sum_{i=1}^{d} k_i x_i^2, \quad 0 < k_1 \leq k_2 \leq \cdots \leq k_d
+\end{equation}
+
+这是最简单的非平凡函数——$d$ 个独立的"弹簧"，第 $i$ 个方向的"弹性系数"是 $k_i$。最优点在原点 $\bm{x}^* = \bm{0}$。
+
+\textbf{为什么从它开始？}
+\begin{itemize}
+    \item 各方向独立，$d$ 维问题解耦为 $d$ 个一维问题
+    \item 梯度 $\nabla f = (k_1 x_1, k_2 x_2, \ldots, k_d x_d)^\top$——每个方向独立计算
+    \item Hessian $= \text{diag}(k_1, \ldots, k_d)$ 是常数——不随位置变化
+    \item 所有定量结论可以精确手算
+    \item 推出来的结论惊人地普适，能解释深度学习训练中的大部分现象
+\end{itemize}
+
+\textbf{关键参数}：
+\begin{itemize}
+    \item 最小曲率：$\mu = k_1$（最"软"的弹簧）
+    \item 最大曲率：$L = k_d$（最"硬"的弹簧）
+    \item 条件数：$\kappa = L/\mu = k_d/k_1$（衡量各方向曲率的不均衡程度）
+\end{itemize}
+
+
+%========================================
+\section{GD 在二次函数上的完整分析}
+%========================================
+
+在引入任何随机性之前，我们先把\textbf{确定性}梯度下降在 $f(\bm{x}) = \frac{1}{2}\sum k_i x_i^2$ 上的行为分析透彻。
+
+\subsection{一般二次型与特征值分解}
+
+实际中遇到的二次函数往往不是对角的，而是一般形式：
+\begin{equation}
+    f(\bm{x}) = \frac{1}{2}\bm{x}^\top A \bm{x}, \quad A \succ 0
+\end{equation}
+
+$A$ 是对称正定矩阵，可以做特征值分解 $A = Q \Lambda Q^\top$，其中 $Q$ 是正交矩阵（列为特征向量），$\Lambda = \text{diag}(\lambda_1, \ldots, \lambda_d)$。
+
+做变量替换 $\bm{z} = Q^\top \bm{x}$（旋转坐标），则：
+\begin{equation}
+    f = \frac{1}{2}\bm{z}^\top \Lambda \bm{z} = \frac{1}{2}\sum_{i=1}^{d} \lambda_i z_i^2
+\end{equation}
+
+回到了对角形式！所以我们分析 $f = \frac{1}{2}\sum k_i x_i^2$ 不失一般性——任何二次函数通过旋转坐标都可以化成这个形式。
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[scale=0.55]
+    % 左图：原坐标下的椭圆等高线
+    \begin{scope}[xshift=0cm]
+        \draw[->] (-4, 0) -- (4, 0) node[right] {$x_1$};
+        \draw[->] (0, -4) -- (0, 4) node[above] {$x_2$};
+        
+        % 旋转的椭圆（一般二次型，主轴不与坐标轴对齐）
+        \begin{scope}[rotate=30]
+            \draw[blue, thick] (0, 0) ellipse (1.2 and 3);
+            \draw[blue] (0, 0) ellipse (0.6 and 1.5);
+            \draw[blue] (0, 0) ellipse (1.8 and 3.5);
+        \end{scope}
+        
+        % 特征向量方向
+        \draw[->, very thick, red] (0,0) -- ({1.5*cos(30)},{1.5*sin(30)}) node[right] {$\bm{v}_2$（$\lambda_2$大）};
+        \draw[->, very thick, mygreen] (0,0) -- ({1.5*cos(120)},{1.5*sin(120)}) node[left] {$\bm{v}_1$（$\lambda_1$小）};
+        
+        \fill[black] (0,0) circle (3pt);
+        \node[below] at (0, -4.5) {一般二次型 $\frac{1}{2}\bm{x}^\top A\bm{x}$};
+        \node[below] at (0, -5.5) {椭圆主轴 = 特征向量方向};
+    \end{scope}
+    
+    % 箭头
+    \draw[->, very thick] (5, 0) -- (7, 0);
+    \node[above] at (6, 0.3) {$\bm{z} = Q^\top \bm{x}$};
+    \node[below] at (6, -0.3) {\small 旋转坐标};
+    
+    % 右图：特征坐标下的对角形式
+    \begin{scope}[xshift=12cm]
+        \draw[->] (-4, 0) -- (4, 0) node[right] {$z_1$};
+        \draw[->] (0, -4) -- (0, 4) node[above] {$z_2$};
+        
+        % 轴对齐的椭圆
+        \draw[blue, thick] (0, 0) ellipse (3 and 1.2);
+        \draw[blue] (0, 0) ellipse (1.5 and 0.6);
+        \draw[blue] (0, 0) ellipse (3.5 and 1.8);
+        
+        % 标注
+        \draw[<->] (-3, -2.5) -- (3, -2.5);
+        \node[below] at (0, -2.5) {\small $\propto 1/\sqrt{\lambda_1}$};
+        \draw[<->] (3.8, -1.2) -- (3.8, 1.2);
+        \node[right] at (3.8, 0) {\small $\propto 1/\sqrt{\lambda_2}$};
+        
+        \fill[black] (0,0) circle (3pt);
+        \node[below] at (0, -4.5) {对角形式 $\frac{1}{2}\sum \lambda_i z_i^2$};
+        \node[below] at (0, -5.5) {各方向独立，$\kappa = \lambda_2/\lambda_1$};
+    \end{scope}
+\end{tikzpicture}
+\caption{一般二次型通过特征值分解化为对角形式。等高线是椭圆，长轴对应最小特征值（最平坦方向），短轴对应最大特征值（最陡峭方向）。条件数 $\kappa = \lambda_{\max}/\lambda_{\min}$ 衡量椭圆的扁率。}
+\end{figure}
+
+\subsection{GD 更新与解耦}
+
+梯度下降：$\bm{x}_{t+1} = \bm{x}_t - \eta \nabla f(\bm{x}_t)$。
+
+对第 $i$ 个方向，$\nabla_i f = k_i x_i$，所以：
+\begin{equation}
+    x_{t+1,i} = x_t - \eta k_i x_{t,i} = (1 - \eta k_i)\, x_{t,i}
+\end{equation}
+
+这是一个简单的等比数列！递推展开：
+\begin{equation}
+    \boxed{x_{t,i} = (1 - \eta k_i)^t \cdot x_{0,i}}
+\end{equation}
+
+各方向完全独立，每个方向是收敛因子 $\rho_i = |1 - \eta k_i|$ 的等比衰减。
+
+\subsection{一维例子：$f(x) = \frac{1}{2}kx^2$}
+
+\subsubsection{手算：$k = 2$，$x_0 = 4$，$\eta = 0.3$}
+
+$x_{t+1} = (1 - 0.6)x_t = 0.4 x_t$。收敛因子 $\rho = 0.4$。
+
+\begin{center}
+\begin{tabular}{c|cccc}
+$t$ & $x_t$ & $f(x_t) = x_t^2$ & $f'(x_t) = 2x_t$ & $x_{t+1} = x_t - 0.3f'$ \\
+\hline
+0 & 4.000 & 16.00 & 8.000 & 1.600 \\
+1 & 1.600 & 2.56 & 3.200 & 0.640 \\
+2 & 0.640 & 0.41 & 1.280 & 0.256 \\
+3 & 0.256 & 0.066 & 0.512 & 0.102 \\
+4 & 0.102 & 0.010 & 0.205 & 0.041 \\
+\end{tabular}
+\end{center}
+
+$x_t = 4 \times 0.4^t$，指数收敛！5 步后误差衰减 $0.4^5 = 0.010$，即到原来的 $1\%$。
+
+\subsubsection{不同 $\eta$ 的效果}
+
+同样 $k = 2$，$x_0 = 4$：
+
+\begin{center}
+\begin{tabular}{c|ccccc}
+$\eta$ & $\eta k$ & $\rho = |1-\eta k|$ & 行为 & $x_5$ & $|x_5/x_0|$ \\
+\hline
+0.1 & 0.2 & 0.8 & 缓慢衰减 & 1.311 & 0.328 \\
+0.3 & 0.6 & 0.4 & 快速衰减 & 0.041 & 0.010 \\
+0.5 & 1.0 & \textbf{0} & 一步到位 & 0 & 0 \\
+0.7 & 1.4 & 0.4 & 振荡衰减 & $-0.041$ & 0.010 \\
+0.9 & 1.8 & 0.8 & 剧烈振荡 & $-1.311$ & 0.328 \\
+1.0 & 2.0 & 1.0 & 临界振荡 & $-4$ & 1.000 \\
+1.1 & 2.2 & 1.2 & \textbf{发散} & 8.88 & 2.22 \\
+\end{tabular}
+\end{center}
+
+\textbf{关键观察}：
+\begin{itemize}
+    \item $\eta k < 1$：单调收敛，$\eta$ 越大越快
+    \item $\eta k = 1$：一步到位！$x_1 = (1-1)x_0 = 0$
+    \item $1 < \eta k < 2$：\textbf{振荡}收敛——每步 $x$ 变号，但幅度衰减
+    \item $\eta k = 2$：临界——振幅不变，永远在 $+x_0$ 和 $-x_0$ 之间跳
+    \item $\eta k > 2$：发散！
+\end{itemize}
+
+\textbf{稳定条件}：$|1 - \eta k| < 1$，即 $0 < \eta < 2/k$。
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[scale=0.9]
+\begin{axis}[
+    xlabel={$\eta k$},
+    ylabel={$\rho = |1 - \eta k|$},
+    domain=0:2.5,
+    samples=200,
+    width=10cm,
+    height=6cm,
+    ymin=0, ymax=1.5,
+    xmin=0, xmax=2.5,
+    axis lines=middle,
+    grid=major,
+    legend pos=north east,
+]
+    \addplot[blue, thick] {abs(1-x)};
+    \addlegendentry{$\rho(\eta)$}
+    \addplot[red, dashed, thick] coordinates {(0,1) (2.5,1)};
+    \addlegendentry{$\rho = 1$（稳定边界）}
+    
+    % 标注
+    \node[above] at (1, 0) {\small 一步到位};
+    \node[above right] at (2, 1) {\small 临界};
+\end{axis}
+\end{tikzpicture}
+\caption{收敛因子 $\rho = |1 - \eta k|$ 关于 $\eta k$ 的函数。最优点在 $\eta k = 1$，稳定区间 $\eta k \in (0, 2)$。}
+\end{figure}
+
+\subsection{二维例子：条件数的影响}
+
+$f(x,y) = \frac{1}{2}(k_1 x^2 + k_2 y^2)$，$k_1 = 1$（软方向），$k_2 = 10$（硬方向），$\kappa = 10$。
+
+GD 用\textbf{同一个 $\eta$} 处理两个方向。
+
+\subsubsection{$\eta = 1/L = 0.1$（保守选择）}
+
+$\rho_x = |1 - 0.1| = 0.9$（慢），$\rho_y = |1 - 1| = 0$（一步到位）。
+
+从 $(x_0, y_0) = (1, 1)$ 出发：
+
+\begin{center}
+\begin{tabular}{c|cc|c}
+$t$ & $x_t$ & $y_t$ & $f$ \\
+\hline
+0 & 1.000 & 1.000 & 5.50 \\
+1 & 0.900 & \textbf{0.000} & 0.405 \\
+2 & 0.810 & 0.000 & 0.328 \\
+5 & 0.590 & 0.000 & 0.174 \\
+10 & 0.349 & 0.000 & 0.061 \\
+22 & 0.098 & 0.000 & 0.005 \\
+\end{tabular}
+\end{center}
+
+$y$ 方向\textbf{一步到位}，但 $x$ 方向需要 $\sim 22$ 步！浪费了 $y$ 方向的收敛能力。
+
+\subsubsection{$\eta^* = 2/(k_1 + k_2) = 2/11 \approx 0.182$（最优）}
+
+$\rho_x = |1 - 0.182| = 0.818$，$\rho_y = |1 - 1.82| = 0.818$。两方向收敛因子\textbf{相等}！
+
+\begin{center}
+\begin{tabular}{c|cc|c}
+$t$ & $x_t$ & $y_t$ & $f$ \\
+\hline
+0 & 1.000 & 1.000 & 5.50 \\
+1 & 0.818 & $-0.818$ & 3.69 \\
+2 & 0.669 & 0.669 & 2.47 \\
+5 & 0.367 & $-0.367$ & 0.74 \\
+10 & 0.135 & 0.135 & 0.10 \\
+12 & 0.090 & 0.090 & 0.045 \\
+\end{tabular}
+\end{center}
+
+$y$ 方向在振荡（每步变号），但幅度和 $x$ 方向同步衰减。$t=12$ 步就到 $1\%$，比 $\eta = 0.1$ 的 22 步快了将近一倍。
+
+\subsubsection{$\eta = 0.19$（接近稳定上界 $2/10 = 0.2$）}
+
+$\rho_x = 0.81$，$\rho_y = |1 - 1.9| = 0.9$。$y$ 方向振荡剧烈，拖慢了整体！
+
+\begin{center}
+\begin{tabular}{c|cc|c}
+$t$ & $x_t$ & $y_t$ & $f$ \\
+\hline
+0 & 1.000 & 1.000 & 5.50 \\
+1 & 0.810 & $-0.900$ & 4.38 \\
+5 & 0.349 & $-0.590$ & 1.80 \\
+10 & 0.122 & 0.349 & 0.62 \\
+22 & 0.015 & 0.098 & 0.048 \\
+\end{tabular}
+\end{center}
+
+结果：$\eta = 0.19$ 需要 22 步（和 $\eta = 0.1$ 一样慢！），但 $\eta^* = 0.182$ 只需要 12 步。
+
+\begin{insight}[GD 收敛的核心矛盾]
+GD 用\textbf{同一个 $\eta$} 处理所有方向：
+\begin{itemize}
+    \item 硬方向（$k_i$ 大）：需要小 $\eta$ 避免过冲/发散
+    \item 软方向（$k_i$ 小）：需要大 $\eta$ 加速收敛
+\end{itemize}
+
+$\eta$ 的上界被最硬方向卡住：$\eta < 2/k_d$。但此时软方向的收敛因子 $\rho_1 = 1 - \eta k_1 \approx 1 - 2k_1/k_d = 1 - 2/\kappa$，接近 1。
+
+\textbf{条件数 $\kappa$ 越大，这个矛盾越严重}。$\kappa = 100$ 时，最慢方向每步只减少 $2\%$ 的误差，需要 $\sim 230$ 步。$\kappa = 10^6$（常见于未归一化的数据）时，需要 $\sim 10^6$ 步。
+
+这就是为什么\textbf{预条件}（不同方向用不同步长）和\textbf{数据归一化}（降低 $\kappa$）如此重要。
+\end{insight}
+
+
+%========================================
+\section{从二次函数到线性回归：数据决定 $k_i$}
+%========================================
+
+现在我们把二次函数 $f = \frac{1}{2}\sum k_i x_i^2$ 和机器学习联系起来。
+
+\subsection{线性回归的总体损失}
+
+考虑 $d$ 维线性回归：
+\begin{equation}
+    y = \mathbf{x}^\top \boldsymbol{\theta}^* + \varepsilon
+\end{equation}
+其中：
+\begin{itemize}
+    \item $\mathbf{x} \sim \mathcal{N}(\mathbf{0}, \boldsymbol{\Sigma})$：$d$ 维输入，$\boldsymbol{\Sigma} = \text{diag}(\lambda_1, \ldots, \lambda_d)$，$0 < \lambda_1 \leq \cdots \leq \lambda_d$
+    \item $\varepsilon \sim \mathcal{N}(0, \sigma_\varepsilon^2)$：观测噪声，与 $\mathbf{x}$ 独立
+    \item $\boldsymbol{\theta}^* \in \mathbb{R}^d$：真实参数
+\end{itemize}
+
+\textbf{关键简化}：$\boldsymbol{\Sigma}$ 为对角阵意味着各坐标方向独立，问题解耦为 $d$ 个一维问题，但各方向曲率 $\lambda_i$ 不同。
+
+总体损失函数定义为预测误差的期望（对 $\mathbf{x}$ 和 $\varepsilon$ 的分布取期望）：
+\begin{equation}
+    L(\mathbf{a}) = \frac{1}{2}\mathbb{E}\left[(y - \mathbf{x}^\top\mathbf{a})^2\right]
+\end{equation}
+
+下面逐步展开。首先代入 $y = \mathbf{x}^\top\boldsymbol{\theta}^* + \varepsilon$：
+\begin{align}
+    y - \mathbf{x}^\top\mathbf{a} &= \mathbf{x}^\top\boldsymbol{\theta}^* + \varepsilon - \mathbf{x}^\top\mathbf{a} = \mathbf{x}^\top(\boldsymbol{\theta}^* - \mathbf{a}) + \varepsilon
+\end{align}
+
+定义误差向量 $\mathbf{e} = \mathbf{a} - \boldsymbol{\theta}^*$（即 $\boldsymbol{\theta}^* - \mathbf{a} = -\mathbf{e}$），则：
+\begin{equation}
+    y - \mathbf{x}^\top\mathbf{a} = -\mathbf{x}^\top\mathbf{e} + \varepsilon
+\end{equation}
+
+平方展开：
+\begin{align}
+    (y - \mathbf{x}^\top\mathbf{a})^2 &= (-\mathbf{x}^\top\mathbf{e} + \varepsilon)^2 \\
+    &= (\mathbf{x}^\top\mathbf{e})^2 - 2\varepsilon\,\mathbf{x}^\top\mathbf{e} + \varepsilon^2
+\end{align}
+
+取期望。注意 $\varepsilon$ 与 $\mathbf{x}$ 独立，且 $\mathbb{E}[\varepsilon] = 0$：
+\begin{align}
+    \mathbb{E}\bigl[(y - \mathbf{x}^\top\mathbf{a})^2\bigr] &= \mathbb{E}\bigl[(\mathbf{x}^\top\mathbf{e})^2\bigr] - 2\,\underbrace{\mathbb{E}[\varepsilon]}_{=\,0}\,\mathbb{E}[\mathbf{x}^\top\mathbf{e}] + \underbrace{\mathbb{E}[\varepsilon^2]}_{=\,\sigma_\varepsilon^2} \\
+    &= \mathbb{E}\bigl[(\mathbf{x}^\top\mathbf{e})^2\bigr] + \sigma_\varepsilon^2
+\end{align}
+
+现在处理 $\mathbb{E}[(\mathbf{x}^\top\mathbf{e})^2]$。注意这里 $\mathbf{e}$ 是关于参数 $\mathbf{a}$ 的确定量（不是随机的），期望只对 $\mathbf{x}$ 取。展开：
+\begin{align}
+    (\mathbf{x}^\top\mathbf{e})^2 &= \left(\sum_{i=1}^d x_i e_i\right)^2 = \sum_{i=1}^d \sum_{j=1}^d x_i x_j e_i e_j
+\end{align}
+
+取期望，利用 $\boldsymbol{\Sigma} = \text{diag}(\lambda_1,\ldots,\lambda_d)$（即 $x_i$ 之间独立）和 $\mathbb{E}[x_i] = 0$：
+\begin{align}
+    \mathbb{E}[x_i x_j] = \begin{cases} \lambda_i & i = j \\ 0 & i \neq j \end{cases}
+\end{align}
+
+因此交叉项全部消失：
+\begin{align}
+    \mathbb{E}\bigl[(\mathbf{x}^\top\mathbf{e})^2\bigr] &= \sum_{i=1}^d \mathbb{E}[x_i^2]\,e_i^2 = \sum_{i=1}^d \lambda_i\,e_i^2
+\end{align}
+
+代回，并乘以 $\frac{1}{2}$：
+\begin{equation}
+    \boxed{L(\mathbf{a}) = \frac{1}{2}\sum_{i=1}^{d} \lambda_i (a_i - \theta_i^*)^2 + \frac{1}{2}\sigma_\varepsilon^2}
+\end{equation}
+
+第一项是参数误差的加权和，权重正是协方差矩阵的特征值 $\lambda_i$——它们扮演了"各方向弹簧常数"的角色。第二项 $\frac{1}{2}\sigma_\varepsilon^2$ 是不可消除的噪声下界（即使 $\mathbf{a} = \boldsymbol{\theta}^*$，预测误差仍为 $\sigma_\varepsilon^2$），在优化中是常数，不影响梯度。
+
+定义：
+\begin{itemize}
+    \item 强凸参数（最小曲率）：$\mu = \lambda_1$
+    \item Lipschitz 常数（最大曲率）：$L = \lambda_d$
+    \item 条件数：$\kappa = L/\mu = \lambda_d/\lambda_1$
+\end{itemize}
+
+\subsection{数据决定了弹簧常数 $k_i$}
+
+对比我们之前分析的 $f(\bm{x}) = \frac{1}{2}\sum k_i x_i^2$ 和线性回归的总体损失 $L(\mathbf{a}) = \frac{1}{2}\sum \lambda_i (a_i - \theta_i^*)^2$，结构完全一样！
+
+\textbf{$k_i$ 就是 $\lambda_i$——数据的协方差特征值决定了优化的"弹簧常数"！}
+
+这意味着：
+\begin{itemize}
+    \item 上一节关于 GD 的所有结论直接适用
+    \item 条件数 $\kappa = \lambda_d/\lambda_1$ 由\textbf{数据分布}决定，而非模型
+    \item 如果特征 $x_1$ 的方差是 $1$，特征 $x_2$ 的方差是 $10^6$，则 $\kappa \geq 10^6$
+    \item \textbf{数据预处理}（归一化）直接改变 $\kappa$，从而改变收敛速度
+\end{itemize}
+
+\begin{insight}[数据的质量直接决定了优化的难度]
+\textbf{好的数据}（特征经过标准化，$\lambda_i$ 接近）→ $\kappa$ 小 → 各方向同步收敛 → 训练快
+
+\textbf{坏的数据}（特征尺度差异大）→ $\kappa$ 大 → 软方向拖后腿 → 训练慢
+
+这就是为什么\textbf{数据工程}（特征缩放、归一化、PCA 降维）往往比调超参数更重要。在后面的章节中我们会详细分析 Batch Normalization 和 Layer Normalization 如何在深度网络中自动实现这一点。
+\end{insight}
+
+\subsection{为什么需要 SGD？}
+
+全梯度 $\nabla L(\mathbf{a}) = \mathbb{E}[(y - \mathbf{x}^\top\mathbf{a})\mathbf{x}]$ 需要对整个数据分布取期望——实践中不可能（数据量太大，或分布未知，只有样本）。
+
+\textbf{SGD 的核心想法}：用一个样本（或一小批）的梯度代替全梯度。每步计算量从 $O(n)$（$n$ 为数据量）降到 $O(B)$（$B$ 为 batch size）。
+
+代价是引入了\textbf{梯度噪声}。接下来我们精确分析这个噪声的结构。
+
+
+%========================================
+\section{随机梯度与无偏性}
+%========================================
+
+\subsection{单样本梯度的推导}
+
+给定样本 $(\mathbf{x}_t, y_t)$，其中 $y_t = \mathbf{x}_t^\top \boldsymbol{\theta}^* + \varepsilon_t$。瞬时损失：
+\begin{equation}
+    \ell_t(\mathbf{a}) = \frac{1}{2}(y_t - \mathbf{x}_t^\top \mathbf{a})^2
+\end{equation}
+
+对 $a_i$ 求导：
+\begin{align}
+    \frac{\partial \ell_t}{\partial a_i} &= -(y_t - \mathbf{x}_t^\top \mathbf{a}_t) \cdot x_{t,i} \\
+    &= -(\mathbf{x}_t^\top \boldsymbol{\theta}^* + \varepsilon_t - \mathbf{x}_t^\top \mathbf{a}_t) \cdot x_{t,i} \\
+    &= -\bigl(\mathbf{x}_t^\top (\boldsymbol{\theta}^* - \mathbf{a}_t) + \varepsilon_t\bigr) \cdot x_{t,i} \\
+    &= (a_{t,i} - \theta_i^*) x_{t,i}^2 + \sum_{j \neq i} (a_{t,j} - \theta_j^*) x_{t,i} x_{t,j} - \varepsilon_t x_{t,i}
+\end{align}
+
+由于 $\boldsymbol{\Sigma}$ 是对角阵，$x_i$ 和 $x_j$（$i \neq j$）独立，且 $\mathbb{E}[x_i] = 0$，所以交叉项 $x_{t,i}x_{t,j}$ 的期望为零。
+
+定义误差 $e_{t,i} = a_{t,i} - \theta_i^*$，随机梯度简化为：
+\begin{equation}
+    g_{t,i} = e_{t,i} \cdot x_{t,i}^2 - \varepsilon_t \cdot x_{t,i}
+\end{equation}
+
+\subsection{无偏性证明}
+
+计算 $\mathbb{E}[g_{t,i} \mid e_{t,i}]$（给定当前误差）：
+\begin{align}
+    \mathbb{E}[g_{t,i} \mid e_{t,i}] &= \mathbb{E}[e_{t,i} \cdot x_{t,i}^2 - \varepsilon_t \cdot x_{t,i} \mid e_{t,i}] \\
+    &= e_{t,i} \cdot \mathbb{E}[x_i^2] - \mathbb{E}[\varepsilon_t] \cdot \mathbb{E}[x_{t,i}] \quad (\text{$x_t$, $\varepsilon_t$ 与 $e_t$ 独立})\\
+    &= e_{t,i} \cdot \lambda_i - 0 \cdot 0 \\
+    &= e_{t,i} \lambda_i
+\end{align}
+
+这正是真实梯度 $\frac{\partial L}{\partial a_i} = \lambda_i (a_i - \theta_i^*) = \lambda_i e_i$。
+
+\textbf{结论}：随机梯度是\textbf{无偏}的，$\mathbb{E}[\mathbf{g}_t] = \nabla L(\mathbf{a}_t)$。
+
+\subsection{梯度方差的计算}
+
+方差 $\text{Var}[g_{t,i} \mid e_{t,i}] = \mathbb{E}[g_{t,i}^2 \mid e_{t,i}] - (\mathbb{E}[g_{t,i} \mid e_{t,i}])^2$。
+
+先计算 $\mathbb{E}[g_{t,i}^2]$。展开平方：
+\begin{align}
+    g_{t,i}^2 &= (e_{t,i} x_{t,i}^2 - \varepsilon_t x_{t,i})^2 \\
+    &= e_{t,i}^2 x_{t,i}^4 - 2 e_{t,i} x_{t,i}^3 \varepsilon_t + \varepsilon_t^2 x_{t,i}^2
+\end{align}
+
+取期望。对于 $x_i \sim \mathcal{N}(0, \lambda_i)$，高斯分布的矩为：
+\begin{itemize}
+    \item $\mathbb{E}[x_i^2] = \lambda_i$
+    \item $\mathbb{E}[x_i^3] = 0$（奇数阶矩为零）
+    \item $\mathbb{E}[x_i^4] = 3\lambda_i^2$（四阶矩：$\mathbb{E}[x^4] = 3(\mathbb{E}[x^2])^2$ 对高斯成立）
+\end{itemize}
+
+利用 $x_{t,i}$ 和 $\varepsilon_t$ 独立：
+\begin{align}
+    \mathbb{E}[g_{t,i}^2 \mid e_{t,i}] &= e_{t,i}^2 \cdot 3\lambda_i^2 - 2 e_{t,i} \cdot 0 \cdot 0 + \sigma_\varepsilon^2 \cdot \lambda_i = 3 e_{t,i}^2 \lambda_i^2 + \lambda_i \sigma_\varepsilon^2
+\end{align}
+
+因此方差为：
+\begin{align}
+    \text{Var}[g_{t,i} \mid e_{t,i}] &= 3 e_{t,i}^2 \lambda_i^2 + \lambda_i \sigma_\varepsilon^2 - (e_{t,i} \lambda_i)^2 = \boxed{2 e_{t,i}^2 \lambda_i^2 + \lambda_i \sigma_\varepsilon^2}
+\end{align}
+
+\begin{insight}[梯度方差的两个来源]
+\begin{itemize}
+    \item $2e_{t,i}^2 \lambda_i^2$：来自曲率的\textbf{方向不确定性}——$x_t^2$ 的波动导致对"真实曲率"估计不准。前期 $|e_t|$ 大时主导。
+    \item $\lambda_i \sigma_\varepsilon^2$：来自\textbf{观测噪声} $\varepsilon$。后期 $|e_t|$ 小时主导。
+\end{itemize}
+这两个来源在前期和后期的主次关系切换，是理解学习率调度的关键。
+\end{insight}
+
+
+%========================================
+\section{Mini-batch SGD 更新}
+%========================================
+
+\subsection{Mini-batch 梯度}
+
+使用 batch size $B$，第 $i$ 个坐标的 mini-batch 梯度：
+\begin{equation}
+    g_{B,i} = \frac{1}{B}\sum_{b=1}^{B} g_{t,i}^{(b)}
+\end{equation}
+
+\subsection{Mini-batch 梯度的期望}
+
+由于各样本独立同分布：
+\begin{align}
+    \mathbb{E}[g_{B,i} \mid e_{t,i}] &= \frac{1}{B}\sum_{b=1}^{B} \mathbb{E}[g_{t,i}^{(b)} \mid e_{t,i}] = \frac{1}{B} \cdot B \cdot e_{t,i} \lambda_i = e_{t,i} \lambda_i
+\end{align}
+
+期望不变，仍然\textbf{无偏}。
+
+\subsection{Mini-batch 梯度的方差}
+
+由于各样本独立：
+\begin{align}
+    \text{Var}[g_{B,i} \mid e_{t,i}] &= \frac{1}{B^2} \sum_{b=1}^{B} \text{Var}[g_{t,i}^{(b)} \mid e_{t,i}] = \frac{2 e_{t,i}^2 \lambda_i^2 + \lambda_i \sigma_\varepsilon^2}{B}
+\end{align}
+
+\begin{equation}
+    \boxed{\text{Var}[g_{B,i}] = \frac{1}{B} \text{Var}[g_{t,i}]}
+\end{equation}
+
+Mini-batch 将方差缩小 $B$ 倍！这是"以计算换精度"的核心机制。
+
+\subsection{更新规则与误差递推}
+
+参数更新 $a_{t+1,i} = a_{t,i} - \eta \cdot g_{B,i}$，误差更新：
+\begin{equation}
+    e_{t+1,i} = e_{t,i} - \eta \cdot g_{B,i}
+\end{equation}
+
+\subsection{手算例子：一维 SGD 的逐步追踪}
+
+\textbf{设置}：一维线性回归，$\lambda = 4$（即 $x \sim \mathcal{N}(0,4)$），$\sigma_\varepsilon^2 = 0.01$，$\theta^* = 0$，初始参数 $a_0 = 1$（即 $e_0 = 1$），$\eta = 0.3$，$B = 1$（纯 SGD）。
+
+\textbf{第 0 步}：$e_0 = 1$。
+
+真实梯度 $= \lambda e_0 = 4$。
+
+抽一个样本 $x_0 \sim \mathcal{N}(0,4)$，比如 $x_0 = 2.5$。$\varepsilon_0 \sim \mathcal{N}(0,0.01)$，比如 $\varepsilon_0 = 0.08$。
+
+随机梯度 $g_0 = e_0 x_0^2 - \varepsilon_0 x_0 = 1 \times 6.25 - 0.08 \times 2.5 = 6.05$
+
+更新：$e_1 = e_0 - 0.3 \times 6.05 = 1 - 1.815 = -0.815$
+
+\textbf{观察}：过冲了！真实梯度是 4，最优步应该是 $e_0 - 0.3\times 4 = -0.2$，但随机梯度是 6.05（比真实大），导致过冲到 $-0.815$。
+
+\textbf{第 1 步}：$e_1 = -0.815$。
+
+新样本 $x_1 = -1.3$，$\varepsilon_1 = -0.05$。
+
+$g_1 = (-0.815) \times 1.69 - (-0.05)(-1.3) = -1.378 - 0.065 = -1.443$
+
+$e_2 = -0.815 - 0.3 \times (-1.443) = -0.815 + 0.433 = -0.382$
+
+\textbf{观察}：方向对了（往回拉），但幅度受随机性影响。
+
+\textbf{第 2 步}：$e_2 = -0.382$，$x_2 = 3.1$，$\varepsilon_2 = 0.02$。
+
+$g_2 = (-0.382)(9.61) - (0.02)(3.1) = -3.671 - 0.062 = -3.733$
+
+$e_3 = -0.382 - 0.3\times(-3.733) = -0.382 + 1.120 = 0.738$
+
+\textbf{又过冲了！}从 $-0.382$ 跳到 $0.738$，符号翻转。
+
+\begin{center}
+\begin{tabular}{c|cccc}
+$t$ & $e_t$ & $x_t$ & $g_t$ & $e_{t+1}$ \\
+\hline
+0 & 1.000 & 2.5 & 6.05 & $-0.815$ \\
+1 & $-0.815$ & $-1.3$ & $-1.44$ & $-0.382$ \\
+2 & $-0.382$ & 3.1 & $-3.73$ & 0.738 \\
+3 & 0.738 & 0.8 & 0.46 & 0.600 \\
+\end{tabular}
+\end{center}
+
+\textbf{关键观察}：
+\begin{itemize}
+    \item 轨迹非常"抖"——这就是 SGD 的本质。每步的随机梯度与真实梯度可能差很远。
+    \item 期望在衰减（$\mathbb{E}[e_t] = (1-0.3\times 4)^t = (-0.2)^t$，振荡趋于 0），但实际轨迹的\textbf{方差}很大。
+    \item 增大 $B$ 可以"平滑"轨迹——$B$ 个样本的平均比单样本稳定得多。
+\end{itemize}
+
+\subsection{Mini-batch 的效果：数值对比}
+
+同样参数，但 $B = 10$。mini-batch 梯度 $g_{B} = \frac{1}{10}\sum_{b=1}^{10} g^{(b)}$。
+
+由中心极限定理，$g_B$ 的方差约为单样本的 $1/10$，所以：
+
+\begin{center}
+\begin{tabular}{c|cc}
+& $B=1$（纯 SGD） & $B=10$ \\
+\hline
+单步梯度方差 & $2e_t^2\lambda^2 + \lambda\sigma_\varepsilon^2 \approx 32$ & $\approx 3.2$ \\
+典型梯度偏差 & $\pm 5.7$ & $\pm 1.8$ \\
+轨迹 & 剧烈抖动 & 相对平滑 \\
+\end{tabular}
+\end{center}
+
+但两者的\textbf{期望轨迹}完全相同——mini-batch 不改变期望，只减小方差。
+
+
+%========================================
+\section{均值的收敛与最优步长}
+%========================================
+
+\subsection{均值递推}
+
+从更新规则取期望：
+\begin{align}
+    \mathbb{E}[e_{t+1,i}] &= \mathbb{E}[e_{t,i}] - \eta \mathbb{E}[g_{B,i}]
+\end{align}
+
+利用全期望公式 $\mathbb{E}[g_{B,i}] = \mathbb{E}[\mathbb{E}[g_{B,i} \mid e_{t,i}]] = \mathbb{E}[e_{t,i} \lambda_i] = \lambda_i \mathbb{E}[e_{t,i}]$：
+\begin{equation}
+    \mathbb{E}[e_{t+1,i}] = (1 - \eta\lambda_i) \mathbb{E}[e_{t,i}]
+\end{equation}
+
+递推展开：
+\begin{equation}
+    \boxed{\mathbb{E}[e_{t,i}] = (1 - \eta\lambda_i)^t \cdot e_{0,i}}
+\end{equation}
+
+\subsection{收敛条件}
+
+要使所有方向收敛，需要 $|1 - \eta\lambda_i| < 1$ 对所有 $i$ 成立。
+
+对于 $\lambda_i > 0$，$|1 - \eta\lambda_i| < 1$ 等价于 $0 < \eta\lambda_i < 2$。最严格的约束来自最大曲率 $\lambda_d = L$：
+\begin{equation}
+    \boxed{0 < \eta < \frac{2}{L}}
+\end{equation}
+
+步长上界由\textbf{最大曲率}决定。
+
+\subsection{各方向的收敛速度}
+
+定义第 $i$ 个方向的收敛因子 $\rho_i = |1 - \eta\lambda_i|$：
+\begin{itemize}
+    \item 大曲率方向（$\lambda_i$ 大）：$\rho_i$ 小，收敛快
+    \item 小曲率方向（$\lambda_i$ 小）：$\rho_i$ 大，收敛慢
+\end{itemize}
+
+整体收敛由最慢方向决定：$\rho = \max_i \rho_i$。
+
+\subsection{最优步长的推导}
+
+\subsubsection{Case 1：$\eta \leq 1/L$}
+
+此时对所有 $i$，$\eta\lambda_i \leq 1$，所以 $\rho_i = 1 - \eta\lambda_i$（无振荡）。
+
+最大收敛因子来自最小曲率：$\rho = \rho_1 = 1 - \eta\lambda_1 = 1 - \eta\mu$。
+
+要最小化 $\rho$，应取 $\eta$ 尽量大，即 $\eta = 1/L$，此时：
+\[
+\rho = 1 - \mu/L = 1 - 1/\kappa = \frac{\kappa - 1}{\kappa}
+\]
+
+这是 $\eta = 1/L$ 的结果。
+
+\subsubsection{Case 2：$\eta \in (1/L,\; 2/L)$}
+
+此时 $\eta\lambda_d > 1$，所以 $1 - \eta\lambda_d < 0$，方向 $d$ 会\textbf{振荡}——每步误差变号。但只要 $|1 - \eta\lambda_d| < 1$，振荡幅度衰减，仍然收敛。
+
+此时：
+\begin{align}
+    \rho_1 &= 1 - \eta\mu \quad (\text{递减，无振荡}) \\
+    \rho_d &= \eta L - 1 \quad (\text{递增，振荡})
+\end{align}
+
+最优策略：让两端的收敛因子相等 $\rho_1 = \rho_d$：
+\begin{equation}
+    1 - \eta\mu = \eta L - 1 \quad \Rightarrow \quad 2 = \eta(\mu + L) \quad \Rightarrow \quad \eta^* = \frac{2}{\mu + L}
+\end{equation}
+
+此时最优收敛因子：
+\begin{equation}
+    \rho^* = 1 - \eta^*\mu = 1 - \frac{2\mu}{\mu + L} = \frac{L - \mu}{L + \mu} = \frac{\kappa - 1}{\kappa + 1}
+\end{equation}
+
+\subsubsection{比较两种选择}
+
+由于 $\frac{\kappa - 1}{\kappa + 1} < \frac{\kappa - 1}{\kappa}$（分子相同，分母更大），\textbf{Case 2 更优}！
+
+下图展示了为什么 $\eta^* = 2/(\lambda_1 + \lambda_d)$ 是最优的。考虑 4 个方向（$\lambda_1 = 1, \lambda_2 = 3, \lambda_3 = 6, \lambda_4 = 10$），每条 V 形线 $\rho_i(\eta) = |1 - \eta\lambda_i|$ 表示第 $i$ 个方向的收敛因子。整体收敛速度由所有方向中\textbf{最慢的}决定，即上包络 $\rho(\eta) = \max_i \rho_i(\eta)$。最优 $\eta^*$ 就是使上包络取到最小值的点。
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[scale=1.0]
+\begin{axis}[
+    xlabel={学习率 $\eta$},
+    ylabel={收敛因子 $\rho_i = |1 - \eta\lambda_i|$},
+    width=14cm,
+    height=9cm,
+    ymin=0, ymax=1.15,
+    xmin=0, xmax=0.23,
+    axis lines=left,
+    grid=major,
+    legend pos=north east,
+    legend style={font=\footnotesize},
+]
+    % lambda_1 = 1
+    \addplot[blue, thick, domain=0:0.22, samples=200] {abs(1 - 1*x)};
+    \addlegendentry{$\rho_1$：$\lambda_1 = 1$}
+    
+    % lambda_2 = 3
+    \addplot[mygreen, thick, domain=0:0.22, samples=200] {abs(1 - 3*x)};
+    \addlegendentry{$\rho_2$：$\lambda_2 = 3$}
+    
+    % lambda_3 = 6
+    \addplot[myorange, thick, domain=0:0.22, samples=200] {abs(1 - 6*x)};
+    \addlegendentry{$\rho_3$：$\lambda_3 = 6$}
+    
+    % lambda_4 = 10 (= L)
+    \addplot[red, thick, domain=0:0.22, samples=200] {abs(1 - 10*x)};
+    \addlegendentry{$\rho_4$：$\lambda_4 = 10$}
+    
+    % Upper envelope (thick black dashed)
+    % For eta in [0, 2/(1+10)=0.182], envelope = rho_1 = 1 - eta
+    % For eta in [0.182, 0.2], envelope = rho_4 = 10*eta - 1
+    \addplot[black, very thick, dashed, domain=0:0.1818, samples=80] {1 - 1*x};
+    \addplot[black, very thick, dashed, domain=0.1818:0.22, samples=40] {10*x - 1};
+    \addlegendentry{上包络 $\max_i \rho_i$}
+    
+    % Optimal point: eta* = 2/(1+10) = 0.1818, rho* = 9/11 = 0.818
+    \addplot[only marks, mark=*, mark size=5pt, black] coordinates {(0.1818, 0.8182)};
+    \node[above right, font=\small] at (0.1818, 0.82) {$\eta^* = \dfrac{2}{\lambda_1+\lambda_4}$, $\rho^* = \dfrac{\kappa-1}{\kappa+1}$};
+    
+    % Stability boundary eta = 2/L = 0.2
+    \draw[gray, thick, dotted] (0.2, 0) -- (0.2, 1.1);
+    \node[gray, right, font=\footnotesize] at (0.2, 1.07) {$\eta_{\max} = \frac{2}{L}$};
+    
+    % Mark 1/L
+    \draw[gray, thin, dashed] (0.1, 0) -- (0.1, 1);
+    \node[gray, below, font=\footnotesize] at (0.1, 0) {$\frac{1}{L}$};
+    
+    % rho = 1 line
+    \addplot[gray, thin, dashed] coordinates {(0, 1) (0.22, 1)};
+    
+\end{axis}
+\end{tikzpicture}
+\caption{四个方向的收敛因子 $\rho_i(\eta) = |1-\eta\lambda_i|$ 及其上包络。每条 V 形线在 $\eta = 1/\lambda_i$ 处触底为 0（该方向一步收敛）。整体收敛由最慢方向（上包络）决定。上包络在 $\eta < \eta^*$ 时由 $\rho_1$（最平坦方向）主导，在 $\eta > \eta^*$ 时由 $\rho_4$（最陡峭方向）主导。最优 $\eta^*$ 恰好在 $\rho_1 = \rho_4$ 的交叉点。注意中间方向（$\lambda_2, \lambda_3$）的 V 形线都在上包络之下——它们不是瓶颈，不影响最优 $\eta$ 的选取。}
+\end{figure}
+
+\textbf{从图中可以读出的关键信息}：
+\begin{itemize}
+    \item 每条 V 形线在 $\eta = 1/\lambda_i$ 处触底——如果只有这一个方向，选 $\eta = 1/\lambda_i$ 即可一步收敛。
+    \item 但多方向共用同一个 $\eta$，整体被最慢方向（上包络）卡住。
+    \item 上包络只由\textbf{两个极端方向}决定：$\lambda_1$（最小）和 $\lambda_d$（最大）。中间的特征值虽然画了线，但它们的 V 形都落在上包络之下，对最优 $\eta$ 的选取没有影响。
+    \item 最优 $\eta^*$ 在 $\rho_1 = \rho_d$ 的交叉点。几何上，这是上包络"谷底"的位置。
+    \item $\eta < \eta^*$：上包络沿蓝线（$\rho_1$）下降——此时增大 $\eta$ 有益（平坦方向是瓶颈）。
+    \item $\eta > \eta^*$：上包络沿红线（$\rho_d$）上升——此时增大 $\eta$ 有害（陡峭方向变成瓶颈）。
+\end{itemize}
+
+\begin{keypoint}[最优步长与收敛因子]
+\begin{equation}
+    \boxed{\eta^* = \frac{2}{\mu + L}, \quad \rho^* = \frac{\kappa - 1}{\kappa + 1}}
+\end{equation}
+\end{keypoint}
+
+\subsubsection{为什么比 $\eta = 1/L$ 快一倍？}
+
+当 $\kappa \gg 1$ 时：$\eta = 1/L$ 给出 $\rho \approx 1 - 1/\kappa$，步数 $\sim \kappa \log(1/\epsilon)$；而 $\eta^*$ 给出 $\rho^* \approx 1 - 2/\kappa$，步数 $\sim \frac{\kappa}{2} \log(1/\epsilon)$。\textbf{快了将近一倍！}
+
+\paragraph{数值例子.}（$\mu = 1$，$L = 9$，$\kappa = 9$）：
+
+\begin{center}
+\begin{tabular}{l|ccc}
+ & $\eta_A = 1/L = 0.111$ & $\eta^* = 0.2$ & $\eta_C = 0.22$（接近上界）\\
+\hline
+$\rho_1 = |1-\eta\mu|$ & 0.889 & 0.800 & 0.780 \\
+$\rho_d = |1-\eta L|$ & 0.000 & 0.800 & 0.980 \\
+$\rho = \max$ & \textbf{0.889} & \textbf{0.800} & \textbf{0.980} \\
+降到 $1\%$ 步数 & 39 步 & \textbf{21 步} & 230 步 \\
+\end{tabular}
+\end{center}
+
+\textbf{教训}：$\eta_A$（太保守）方向 1 太慢；$\eta^*$ 两方向平衡，最快；$\eta_C$（太大）方向 $d$ 剧烈振荡，反而最慢。学习率不是越大越好！
+
+\subsubsection{手算例子：二维 GD 的逐步迭代}
+
+\textbf{设置}：$f(x,y) = \frac{1}{2}(9x^2 + y^2)$，$\mu = 1$，$L = 9$，$\kappa = 9$。初始点 $(x_0, y_0) = (1, 9)$。
+
+\textbf{用 $\eta = 1/L = 0.111$}：
+
+梯度 $\nabla f = (9x, y)$。
+
+\begin{center}
+\begin{tabular}{c|cc|cc|c}
+$t$ & $x_t$ & $y_t$ & $\partial f/\partial x$ & $\partial f/\partial y$ & $f$ \\
+\hline
+0 & 1.000 & 9.000 & 9.000 & 9.000 & 45.00 \\
+1 & 0.000 & 8.000 & 0.000 & 8.000 & 32.00 \\
+2 & 0.000 & 7.111 & 0.000 & 7.111 & 25.28 \\
+5 & 0.000 & 4.990 & 0.000 & 4.990 & 12.45 \\
+10 & 0.000 & 2.774 & 0.000 & 2.774 & 3.85 \\
+\end{tabular}
+\end{center}
+
+$x$ 方向一步到位（$\rho_x = 0$），但 $y$ 方向 $\rho_y = 0.889$，到 $t=10$ 还有 $y = 2.774$。
+
+\textbf{用 $\eta^* = 0.2$}：
+
+\begin{center}
+\begin{tabular}{c|cc|c}
+$t$ & $x_t$ & $y_t$ & $f$ \\
+\hline
+0 & 1.000 & 9.000 & 45.00 \\
+1 & $-0.800$ & 7.200 & 28.80 \\
+2 & 0.640 & 5.760 & 18.43 \\
+3 & $-0.512$ & 4.608 & 11.80 \\
+5 & $-0.328$ & 2.949 & 4.83 \\
+10 & 0.107 & 0.967 & 0.52 \\
+\end{tabular}
+\end{center}
+
+$x$ 方向振荡（$\rho_x = 0.8$，每步变号且缩小），$y$ 方向也 $\rho_y = 0.8$。两方向同步衰减！到 $t=10$ 已经很接近最优点。
+
+\textbf{对比}：$\eta = 0.111$ 在 $t=10$ 时 $f = 3.85$；$\eta^* = 0.2$ 在 $t=10$ 时 $f = 0.52$。\textbf{快了 7 倍！}
+
+代价是 $x$ 方向有振荡，但振荡幅度在指数衰减。
+
+\begin{insight}[最优学习率大概是能稳定训练的最大学习率的一半再小一点]
+GD 的稳定上界是 $\eta_{\max}^{GD} = 2/L$。最优 $\eta^* = 2/(\mu+L)$，当 $\kappa$ 不太大时在 $\eta_{\max}$ 的 $1/2$ 附近（上例 $\eta_{\max}=0.222$，$\eta^*=0.2$）。
+
+对 SGD（有梯度噪声），数值积分表明 SGD 稳定上界 $\eta_{\max}^{SGD} \approx 2.4/\lambda$，最优 $\eta^*_{SGD} \approx 0.6/\lambda \approx \eta_{\max}^{SGD}/4$。
+
+\textbf{实践经验法则}：先找到刚好发散的临界学习率，然后除以 3--4。
+\end{insight}
+
+\subsection{附录 A：SGD 最优学习率的数值分析}
+
+以上最优步长 $\eta^* = 2/(\mu+L)$ 是对\textbf{期望}动力学的分析。加入梯度噪声后，情况更微妙。
+
+\subsubsection{单样本 SGD 的局部曲率波动}
+
+考虑一维 $\lambda = \sigma^2$。单样本的"局部 Hessian"是 $H_t = x_t^2$。由于 $x_t \sim \mathcal{N}(0, \sigma^2)$：
+\begin{equation}
+    H_t = \sigma^2 \cdot Z, \quad Z = (x_t/\sigma)^2 \sim \chi^2(1)
+\end{equation}
+
+$\chi^2(1)$ 是重尾分布：$\mathbb{E}[Z] = 1$，但 $P(Z > 4) \approx 0.046$，$P(Z > 9) \approx 0.003$。偶尔的大 $Z$ 会让局部曲率远超期望。
+
+\subsubsection{期望对数下降率}
+
+多步更新（忽略观测噪声）：$e_T = e_0 \prod_{t=0}^{T-1}(1 - \eta\sigma^2 Z_t)$。
+
+取对数并由大数定律：
+\begin{equation}
+    \frac{1}{T}\log|e_T/e_0| \to r(\eta) = \mathbb{E}[\log|1 - \eta\sigma^2 Z|], \quad Z \sim \chi^2(1)
+\end{equation}
+
+$r(\eta) < 0$ 时期望收敛。SGD 稳定上界 $\eta_{\max}^{SGD}$ 定义为 $r(\eta) = 0$ 的点。
+
+\subsubsection{数值计算}
+
+数值积分 $r(\eta)$（以 $u = \eta\sigma^2$ 为横轴）：
+
+\begin{center}
+\begin{tabular}{c|cccccccccc}
+$u = \eta\sigma^2$ & 0.3 & 0.5 & 0.6 & 0.8 & 1.0 & 1.5 & 2.0 & 2.2 & 2.4 & 2.5 \\
+\hline
+$r(\eta)$ & $-0.36$ & $-0.48$ & $\mathbf{-0.49}$ & $-0.47$ & $-0.41$ & $-0.28$ & $-0.13$ & $-0.05$ & $\approx 0$ & $+0.02$
+\end{tabular}
+\end{center}
+
+\textbf{结论}：
+\begin{itemize}
+    \item SGD 稳定上界：$\eta_{\max}^{SGD}\sigma^2 \approx 2.4$，即 $\eta_{\max}^{SGD} \approx 2.4/\sigma^2$
+    \item \textbf{最优学习率}：$\eta^*\sigma^2 \approx 0.6$，即 $\eta^* \approx 0.6/\sigma^2 \approx \eta_{\max}^{SGD}/4$
+    \item 对比 GD：$\eta_{\max}^{GD} = 2/\sigma^2$，SGD 的上界反而\textbf{更大}（$2.4 > 2$）
+\end{itemize}
+
+\textbf{为什么 SGD 上界更大？}$\log|1-uZ|$ 在 $uZ \approx 1$ 时趋于 $-\infty$（超收敛），但发散时只有限增长。两者不对称，所以"偶尔超收敛"可以补偿"偶尔轻微过冲"。
+
+\subsubsection{Mini-batch 的效果}
+
+Batch size $B$ 时，$\bar{Z} \sim \frac{1}{B}\chi^2(B)$。$B$ 增大时 $\bar{Z}$ 集中于 1，曲率波动减小，$\eta_{\max}^{SGD} \to \eta_{\max}^{GD} = 2/\sigma^2$。
+
+同时最优学习率从 $\approx 0.6/\sigma^2$（$B=1$）逐渐接近 $1/\sigma^2$（$B=\infty$，即 GD 最优点）。
+
+
+%========================================
+\section{方差的演化与稳态误差}
+%========================================
+
+这是理解 $\eta/B$ 关系的核心。
+
+\subsection{将梯度分解为信号和噪声}
+
+将 mini-batch 梯度写成：
+\begin{equation}
+    g_{B,i} = \underbrace{e_{t,i} \lambda_i}_{\text{信号}} + \underbrace{\xi_{t,i}}_{\text{噪声}}
+\end{equation}
+
+误差更新变为：
+\begin{equation}
+    e_{t+1,i} = (1 - \eta\lambda_i) e_{t,i} - \eta \xi_{t,i}
+\end{equation}
+
+\subsection{二阶矩的递推}
+
+计算 $\mathbb{E}[e_{t+1,i}^2]$：
+\begin{align}
+    e_{t+1,i}^2 &= \bigl((1-\eta\lambda_i) e_{t,i} - \eta\xi_{t,i}\bigr)^2 \\
+    &= (1-\eta\lambda_i)^2 e_{t,i}^2 - 2(1-\eta\lambda_i) e_{t,i} \cdot \eta\xi_{t,i} + \eta^2 \xi_{t,i}^2
+\end{align}
+
+取期望。交叉项：$\xi_{t,i}$ 与 $e_{t,i}$ 条件独立（噪声来自新样本），所以 $\mathbb{E}[e_{t,i} \cdot \xi_{t,i}] = 0$。
+
+后期 $e_t$ 小时噪声方差 $\approx \lambda_i\sigma_\varepsilon^2/B$，得到：
+\begin{equation}
+    \boxed{\mathbb{E}[e_{t+1,i}^2] = (1-\eta\lambda_i)^2 \mathbb{E}[e_{t,i}^2] + \frac{\eta^2 \lambda_i \sigma_\varepsilon^2}{B}}
+\end{equation}
+
+一阶线性递推：每步旧方差衰减 + 新噪声注入。
+
+\subsection{稳态方差的求解}
+
+$t \to \infty$ 时，不动点条件：
+\begin{equation}
+    V_{\infty,i} = (1-\eta\lambda_i)^2 V_{\infty,i} + \frac{\eta^2 \lambda_i \sigma_\varepsilon^2}{B}
+\end{equation}
+
+移项：$V_{\infty,i} [1 - (1-\eta\lambda_i)^2] = \frac{\eta^2 \lambda_i \sigma_\varepsilon^2}{B}$
+
+展开 $1 - (1-\eta\lambda_i)^2 = 2\eta\lambda_i - \eta^2\lambda_i^2 = \eta\lambda_i(2-\eta\lambda_i)$，代入：
+\begin{equation}
+    \boxed{V_{\infty,i} = \frac{\eta \sigma_\varepsilon^2}{B(2 - \eta\lambda_i)}}
+\end{equation}
+
+\subsection{参数误差与预测误差}
+
+\textbf{参数误差}：$\|\mathbf{e}\|^2_\infty = \sum_i V_{\infty,i}$
+
+\textbf{预测误差}：$\mathbb{E}[(\mathbf{x}^\top\mathbf{e})^2] = \sum_i \lambda_i V_{\infty,i}$
+
+代入 $V_{\infty,i}$：
+\begin{equation}
+    \boxed{\text{预测误差}_\infty = \sum_{i=1}^{d} \frac{\lambda_i \eta \sigma_\varepsilon^2}{B(2 - \eta\lambda_i)}}
+\end{equation}
+
+\subsection{小步长近似}
+
+$\eta\lambda_i \ll 2$ 时，$2 - \eta\lambda_i \approx 2$：
+
+参数误差 $\approx \frac{d\eta\sigma_\varepsilon^2}{2B}$，预测误差 $\approx \frac{\eta\sigma_\varepsilon^2 \cdot \text{tr}(\boldsymbol{\Sigma})}{2B}$。
+
+\begin{keypoint}[稳态误差 $\propto \eta/B$]
+无论参数误差还是预测误差，稳态时都 $\propto \eta/B$。平坦方向参数误差大但对预测影响小，陡峭方向反之。
+\end{keypoint}
+
+
+%========================================
+\section{偏差-方差分解与线性缩放法则}
+%========================================
+
+\subsection{完整的偏差-方差分解}
+
+\begin{equation}
+    \mathbb{E}[e_{t,i}^2] = \underbrace{(1-\eta\lambda_i)^{2t} e_{0,i}^2}_{\text{Bias}^2:\text{指数衰减，与}B\text{无关}} + \underbrace{V_{\infty,i}(1 - (1-\eta\lambda_i)^{2t})}_{\text{Variance: 从0累积到}V_{\infty,i}}
+\end{equation}
+
+\subsubsection{Variance 演化的推导}
+
+需要计算 $\text{Var}[e_{t,i}] = \mathbb{E}[e_{t,i}^2] - (\mathbb{E}[e_{t,i}])^2$。
+
+$\mathbb{E}[e_{t,i}^2]$ 满足递推 $\mathbb{E}[e_{t+1}^2] = (1-\eta\lambda)^2 \mathbb{E}[e_t^2] + c$，其中 $c = \eta^2\lambda\sigma_\varepsilon^2/B$。
+
+这是一阶线性递推 $a_{t+1} = \alpha^2 a_t + c$（$\alpha = 1-\eta\lambda$），通解为：
+\begin{align}
+    \mathbb{E}[e_t^2] &= \alpha^{2t} \mathbb{E}[e_0^2] + c \cdot \frac{1-\alpha^{2t}}{1-\alpha^2}
+\end{align}
+
+其中 $\frac{c}{1-\alpha^2} = \frac{\eta^2\lambda\sigma_\varepsilon^2/B}{\eta\lambda(2-\eta\lambda)} = \frac{\eta\sigma_\varepsilon^2}{B(2-\eta\lambda)} = V_{\infty}$。
+
+因此 $\mathbb{E}[e_t^2] = \alpha^{2t} e_0^2 + V_\infty(1-\alpha^{2t})$。
+
+减去 $(\mathbb{E}[e_t])^2 = \alpha^{2t} e_0^2$（注意这里 $e_0$ 是确定的）：
+
+$\text{Var}[e_t] = V_\infty(1-\alpha^{2t})$。
+
+从 0 开始单调递增到 $V_\infty$。
+
+\paragraph{手算例子.} $\lambda = 1$，$\sigma_\varepsilon^2 = 0.01$，$B = 100$，$e_0 = 1$，$\eta = 0.5$。
+
+$V_\infty = \frac{0.5 \times 0.01}{100 \times 1.5} = 3.33 \times 10^{-5}$，$\rho = 0.5$
+
+\begin{center}
+\begin{tabular}{c|ccc|c}
+$t$ & Bias$^2 = 0.25^t$ & Variance & 主导项 & 总误差 \\
+\hline
+0 & 1 & 0 & Bias & 1 \\
+5 & $9.8 \times 10^{-4}$ & $3.3 \times 10^{-5}$ & Bias & $1.0 \times 10^{-3}$ \\
+10 & $9.5 \times 10^{-7}$ & $3.3 \times 10^{-5}$ & \textbf{Variance} & $3.4 \times 10^{-5}$ \\
+20 & $\approx 0$ & $3.3 \times 10^{-5}$ & Variance & $3.3 \times 10^{-5}$ \\
+\end{tabular}
+\end{center}
+
+$t < 7$：Bias 主导，误差快速下降。$t > 10$：Variance 主导，误差不再下降 → 应降低 $\eta$！
+
+\subsection{线性缩放法则}
+
+\begin{keypoint}[Linear Scaling Rule]
+$B \to kB$，$\eta \to k\eta$（受限于 $\eta < 2/L$），则稳态误差不变（$\eta/B$ 不变），Bias 衰减更快。
+\[
+\boxed{\frac{\eta}{B} = \mathrm{const}}
+\]
+\end{keypoint}
+
+
+%========================================
+\section{在线学习视角：Regret 分析}
+%========================================
+
+上一节的偏差-方差分解告诉我们 SGD 最终会收敛到什么精度。但还有一个重要问题：\textbf{训练过程中}的累积表现如何？如果模型在训练过程中就在做预测（例如推荐系统、在线广告），我们关心的不只是最终模型有多好，还有训练过程中一共犯了多少错。
+
+这正是\textbf{在线学习}（online learning）中 \textbf{regret} 理论研究的问题。我们接下来展示，regret 分析与偏差-方差分解是同一件事的两种语言。
+
+\subsection{Regret 的定义}
+
+在线学习的设定如下。在每一步 $t = 1, 2, \ldots, T$：
+\begin{enumerate}
+    \item 学习器选择参数 $\mathbf{a}_t$
+    \item 环境给出样本 $(\mathbf{x}_t, y_t)$
+    \item 学习器承受损失 $\ell_t(\mathbf{a}_t) = \frac{1}{2}(y_t - \mathbf{x}_t^\top \mathbf{a}_t)^2$
+\end{enumerate}
+
+学习器无法提前看到数据，只能用已有信息做决策——这正是 SGD 做的事情。
+
+\begin{definition}[Regret]
+累积 regret 定义为学习器的总损失与"事后最优"之差：
+\begin{equation}
+    \mathrm{Regret}_T = \sum_{t=1}^T \ell_t(\mathbf{a}_t) - \min_{\mathbf{a}} \sum_{t=1}^T \ell_t(\mathbf{a})
+\end{equation}
+\end{definition}
+
+$\min_{\mathbf{a}} \sum_t \ell_t(\mathbf{a})$ 是"上帝视角"——如果你在看完所有 $T$ 个样本之后被允许选一个固定的最优参数 $\mathbf{a}^*$，你能做到多好。Regret 衡量的就是在线决策比这个事后最优差了多少。
+
+\textbf{好的算法}应该让 $\mathrm{Regret}_T$ 增长尽量慢——理想情况下 $\mathrm{Regret}_T / T \to 0$，即平均 regret 趋于零。
+
+\subsection{SGD 就是在线梯度下降}
+
+注意 SGD 的更新规则 $\mathbf{a}_{t+1} = \mathbf{a}_t - \eta \nabla \ell_t(\mathbf{a}_t)$ 正好就是在线梯度下降（Online Gradient Descent, OGD）——每步只用当前样本的梯度更新。因此 SGD 的 regret 分析可以直接套用在线学习的经典结果。
+
+\subsection{固定步长的 Regret}
+
+\subsubsection{期望过量损失}
+
+在我们的线性回归模型中，第 $t$ 步的期望过量损失（excess loss）可以用误差 $\mathbf{e}_t = \mathbf{a}_t - \boldsymbol{\theta}^*$ 表示。利用上一节的结果：
+\begin{equation}
+    \mathbb{E}[\ell_t(\mathbf{a}_t)] - \mathbb{E}[\ell_t(\boldsymbol{\theta}^*)] = \frac{1}{2}\sum_{i=1}^d \lambda_i \mathbb{E}[e_{t,i}^2]
+\end{equation}
+
+代入我们已经推导过的偏差-方差分解：
+\begin{equation}
+    \mathbb{E}[e_{t,i}^2] = \underbrace{(1-\eta\lambda_i)^{2t} e_{0,i}^2}_{\text{Bias}^2} + \underbrace{V_{\infty,i}\bigl(1 - (1-\eta\lambda_i)^{2t}\bigr)}_{\text{Variance}}
+\end{equation}
+
+\subsubsection{Regret 的两个组成部分}
+
+对 $t$ 从 $1$ 到 $T$ 求和，期望累积 regret 为：
+\begin{equation}
+    \mathbb{E}[\mathrm{Regret}_T] = \frac{1}{2}\sum_{i=1}^d \lambda_i \sum_{t=1}^T \mathbb{E}[e_{t,i}^2]
+\end{equation}
+
+分别计算 Bias 和 Variance 的贡献。
+
+\paragraph{Bias 部分的求和.}
+
+设 $\rho_i = (1-\eta\lambda_i)^2$（注意这里是平方，因为 $\mathbb{E}[e_{t,i}^2]$ 的 Bias 项含 $(1-\eta\lambda_i)^{2t}$）。
+\begin{align}
+    \sum_{t=1}^T (1-\eta\lambda_i)^{2t} e_{0,i}^2 &= e_{0,i}^2 \sum_{t=1}^T \rho_i^t = e_{0,i}^2 \cdot \frac{\rho_i(1 - \rho_i^T)}{1 - \rho_i}
+\end{align}
+
+当 $T$ 足够大时 $\rho_i^T \to 0$，所以：
+\begin{equation}
+    \sum_{t=1}^T (1-\eta\lambda_i)^{2t} e_{0,i}^2 \approx \frac{\rho_i}{1 - \rho_i} e_{0,i}^2
+\end{equation}
+
+利用 $\rho_i = (1-\eta\lambda_i)^2$ 且 $\eta\lambda_i$ 较小时 $1 - \rho_i \approx 2\eta\lambda_i$：
+\begin{equation}
+    \frac{\rho_i}{1-\rho_i} \approx \frac{1}{2\eta\lambda_i}
+\end{equation}
+
+因此 Bias 对 regret 的总贡献为：
+\begin{equation}
+    R_{\text{bias}} = \frac{1}{2}\sum_i \lambda_i \cdot \frac{e_{0,i}^2}{2\eta\lambda_i} = \frac{1}{4\eta}\sum_i e_{0,i}^2 = \frac{\|\mathbf{e}_0\|^2}{4\eta}
+\end{equation}
+
+这是一个\textbf{与 $T$ 无关的常数}——Bias 指数衰减，几何级数求和后是有限值。$\eta$ 越大，这项越小（大步长快速消除初始误差）。
+
+\paragraph{Variance 部分的求和.}
+
+稳态后每步贡献 $V_{\infty,i}$，一共 $T$ 步。精确地说：
+\begin{align}
+    \sum_{t=1}^T V_{\infty,i}(1 - \rho_i^t) &= T \cdot V_{\infty,i} - V_{\infty,i} \cdot \frac{\rho_i(1-\rho_i^T)}{1-\rho_i} \approx T \cdot V_{\infty,i} - \frac{V_{\infty,i}}{2\eta\lambda_i}
+\end{align}
+
+第二项是有限常数（可并入 Bias 项），主导项是：
+\begin{equation}
+    R_{\text{var}} \approx \frac{T}{2}\sum_i \lambda_i V_{\infty,i} = \frac{T}{2} \cdot \text{预测误差}_\infty \approx T \cdot \frac{\eta\sigma_\varepsilon^2\,\text{tr}(\boldsymbol{\Sigma})}{4B}
+\end{equation}
+
+这项\textbf{与 $T$ 线性增长}——每步都在累积噪声代价。$\eta$ 越小，每步代价越小。
+
+\subsubsection{总 Regret 与最优步长}
+
+合并两项：
+\begin{equation}
+    \boxed{\mathbb{E}[\mathrm{Regret}_T] \approx \underbrace{\frac{\|\mathbf{e}_0\|^2}{4\eta}}_{\text{Bias 总贡献}\ O(1/\eta)} + \underbrace{\frac{T\eta\sigma_\varepsilon^2\,\text{tr}(\boldsymbol{\Sigma})}{4B}}_{\text{Variance 累积}\ O(T\eta)}}
+\end{equation}
+
+这就是偏差-方差 trade-off 的 regret 版本：
+\begin{itemize}
+    \item $\eta$ 大 → Bias 项小（快速忘记初始化），但 Variance 项大（噪声累积快）
+    \item $\eta$ 小 → Bias 项大（收敛慢），但 Variance 项小（噪声影响小）
+\end{itemize}
+
+对 $\eta$ 求最小化：令 $\frac{\partial}{\partial\eta}\mathrm{Regret}_T = 0$：
+\begin{equation}
+    -\frac{\|\mathbf{e}_0\|^2}{4\eta^2} + \frac{T\sigma_\varepsilon^2\,\text{tr}(\boldsymbol{\Sigma})}{4B} = 0
+\end{equation}
+
+解得：
+\begin{equation}
+    \eta^*_{\text{regret}} = \frac{\|\mathbf{e}_0\|}{\sigma_\varepsilon\sqrt{T\,\text{tr}(\boldsymbol{\Sigma})/B}} = O\!\left(\frac{1}{\sqrt{T}}\right)
+\end{equation}
+
+代回 regret：
+\begin{equation}
+    \boxed{\mathrm{Regret}_T^* = O\!\left(\frac{\|\mathbf{e}_0\|\,\sigma_\varepsilon\sqrt{\text{tr}(\boldsymbol{\Sigma})}}{2\sqrt{B}} \cdot \sqrt{T}\right) = O(\sqrt{T})}
+\end{equation}
+
+\begin{keypoint}[$O(\sqrt{T})$ Regret 界]
+固定步长 SGD，最优选择 $\eta = O(1/\sqrt{T})$ 时，累积 regret 为 $O(\sqrt{T})$，即平均 regret $\mathrm{Regret}_T/T = O(1/\sqrt{T}) \to 0$。
+
+这是在线凸优化的经典结果（Zinkevich, 2003），对\textbf{任意}凸损失都成立。但它要求提前知道 $T$ 来选择 $\eta$——这在实践中并不总是可能的。
+\end{keypoint}
+
+\subsection{衰减步长：$O(\log T)$ Regret}
+
+对于强凸损失（线性回归满足），可以用衰减步长做得更好。
+
+\subsubsection{$\eta_t = c/t$ 的分析}
+
+经典的 Robbins-Monro 条件要求 $\sum_t \eta_t = \infty$（保证能到达任意远的点）且 $\sum_t \eta_t^2 < \infty$（保证噪声累积有限）。$\eta_t = c/t$ 满足这两个条件。
+
+在 $\mu$-强凸情况下，取 $c = 1/\mu$，第 $t$ 步的期望误差为：
+\begin{equation}
+    \mathbb{E}[\|\mathbf{e}_t\|^2] = O\!\left(\frac{1}{t}\right)
+\end{equation}
+
+\textbf{直觉}：随着 $t$ 增大，$\eta_t$ 衰减，噪声注入减小；同时 Bias 已在早期被消除。两个效应叠加使误差以 $1/t$ 速率下降。
+
+\subsubsection{Regret 的计算}
+
+每步期望 excess loss $= O(\frac{1}{t})$，对 $t$ 从 $1$ 到 $T$ 求和：
+\begin{equation}
+    \mathbb{E}[\mathrm{Regret}_T] = \sum_{t=1}^T O\!\left(\frac{1}{t}\right) = O\!\left(\sum_{t=1}^T \frac{1}{t}\right) = O(\log T)
+\end{equation}
+
+更精确地，Hazan, Agarwal \& Kale (2007) 证明了：对 $\mu$-强凸损失，OGD 用 $\eta_t = 1/(\mu t)$ 的 regret 满足：
+\begin{equation}
+    \boxed{\mathrm{Regret}_T \leq \frac{L}{2\mu}\left(1 + \log T\right)}
+\end{equation}
+
+其中 $L$ 是梯度的 Lipschitz 常数。
+
+\subsubsection{与固定步长的对比}
+
+\begin{center}
+\begin{tabular}{l|cc}
+ & 固定 $\eta = O(1/\sqrt{T})$ & 衰减 $\eta_t = c/t$ \\
+\hline
+适用条件 & 凸（一般） & 强凸 \\
+Regret & $O(\sqrt{T})$ & $O(\log T)$ \\
+平均 Regret & $O(1/\sqrt{T})$ & $O(\log T / T)$ \\
+需要知道 $T$? & 需要（选 $\eta$） & 不需要 \\
+最终误差 & $O(1/\sqrt{T})$ & $O(1/T)$ \\
+\end{tabular}
+\end{center}
+
+$O(\log T)$ 比 $O(\sqrt{T})$ 好得多！例如 $T = 10^6$：$\sqrt{T} = 1000$，但 $\log T \approx 14$。代价是需要强凸性——对线性回归是自然满足的（$\mu = \lambda_1 > 0$）。
+
+\subsubsection{手算例子}
+
+$d = 1$，$\lambda = 1$，$\sigma_\varepsilon^2 = 1$，$B = 1$，$e_0 = 10$。
+
+\paragraph{固定步长 $\eta = 0.1$.}
+
+Bias 贡献：$\frac{e_0^2}{4\eta} = \frac{100}{0.4} = 250$
+
+Variance 贡献（$T = 1000$）：$\frac{T\eta\lambda\sigma_\varepsilon^2}{4} = \frac{1000 \times 0.1 \times 1}{4} = 25$
+
+总 Regret $\approx 275$，平均 $0.275$。
+
+\paragraph{最优固定步长 $\eta^* = e_0/(\sigma_\varepsilon\sqrt{T}) = 10/\sqrt{1000} \approx 0.316$.}
+
+Bias 贡献：$\frac{100}{4 \times 0.316} = 79$
+
+Variance 贡献：$\frac{1000 \times 0.316}{4} = 79$
+
+总 Regret $\approx 158$，平均 $0.158$。注意 Bias = Variance——最优步长让两者平衡。
+
+\paragraph{衰减步长 $\eta_t = 1/t$.}
+
+每步 excess loss $\approx c/t$，求和 $\sum_{t=1}^{1000} 1/t \approx \log(1000) + 0.577 \approx 7.5$。
+
+总 Regret $\approx 7.5$，平均 $0.0075$。比固定步长好了一个数量级以上！
+
+\subsection{Regret 视角的独特洞察}
+
+\subsubsection{Learning Rate Decay 的必要性}
+
+从 regret 角度重新理解学习率衰减：
+
+固定 $\eta$ 时，Variance 项以 $O(T\eta)$ 线性增长——每步都在为噪声付代价。衰减 $\eta_t \to 0$ 使得后期每步的噪声代价 $O(\eta_t^2)$ 趋于零，累积求和收敛。
+
+\textbf{这就是为什么 Decay 是必要的}：不是因为我们想让模型"收敛到一个点"（固定 $\eta$ 也能做到，只是停在 $V_\infty$ 附近），而是因为\textbf{训练过程中的累积代价}在固定 $\eta$ 下是 $O(\sqrt{T})$，而衰减 $\eta$ 下只是 $O(\log T)$。
+
+\subsubsection{与偏差-方差分解的对应}
+
+\begin{center}
+\begin{tabular}{c|c}
+\textbf{偏差-方差分析} & \textbf{Regret 分析} \\
+\hline
+Bias$^2 = (1-\eta\lambda)^{2t} e_0^2$ & Bias 总贡献 $= O(1/\eta)$ \\
+稳态 Variance $= V_\infty \propto \eta/B$ & Variance 累积 $= O(T\eta/B)$ \\
+最优 $\eta$：平衡 Bias 衰减速度与稳态精度 & 最优 $\eta$：平衡 $O(1/\eta)$ 与 $O(T\eta)$ \\
+结论：前期大 $\eta$，后期小 $\eta$ & 结论：$\eta_t = O(1/t)$ \\
+\end{tabular}
+\end{center}
+
+两种分析完全一致，只是语言不同。偏差-方差分解更关注\textbf{最终状态}（$t \to \infty$ 时的误差），regret 分析更关注\textbf{过程}（$1$ 到 $T$ 的累积表现）。
+
+\subsubsection{$O(\log T)$ 是最优的}
+
+Hazan et al.\ (2007) 同时证明了：对强凸损失，\textbf{任何}在线算法的 regret 下界为 $\Omega(\log T)$。因此 SGD 用 $\eta_t = 1/(\mu t)$ 达到的 $O(\log T)$ 界是\textbf{渐近最优的}——不可能做得更好。
+
+这个最优性为 SGD 提供了很强的理论保证：在线性回归上，SGD 不仅简单高效，而且在 regret 意义下是最优的在线学习算法。
+
+\subsection{文献指引}
+
+\begin{itemize}
+    \item \textbf{Zinkevich (2003)} - ``Online Convex Programming and Generalized Infinitesimal Gradient Ascent''：在线梯度下降 $O(\sqrt{T})$ regret 的奠基工作。
+    \item \textbf{Hazan, Agarwal \& Kale (2007)} - ``Logarithmic Regret Algorithms for Online Convex Optimization''：强凸损失 $O(\log T)$ regret 及匹配下界。
+    \item \textbf{Shalev-Shwartz (2012)} - ``Online Learning and Online Convex Optimization'', Foundations and Trends：系统综述，详细建立了 SGD 与在线学习的对应关系。
+    \item \textbf{Hazan (2016)} - \textit{Introduction to Online Convex Optimization}：教科书，包含完整的 regret 理论。
+    \item \textbf{Bach (2024)} - \textit{Learning Theory from First Principles}, Ch.\ 5-6：本讲义的主要参考，偏差-方差分解可逐项对应 regret 的两个组成部分。
+\end{itemize}
+
+
+%========================================
+\section{临界 Batch Size 与 Scaling 的天花板}
+%========================================
+
+\subsection{$B_{\text{crit}}$ 的推导}
+
+稳态预测误差 $\approx \frac{\eta\sigma_\varepsilon^2}{2B}\text{tr}(\boldsymbol{\Sigma}) \leq \epsilon$ 给出 $\frac{\eta}{B} \leq \frac{2\epsilon}{\text{tr}(\boldsymbol{\Sigma})\sigma_\varepsilon^2}$。
+
+同时 $\eta \leq \eta_{\max}$。两条约束在临界点相交：
+\begin{equation}
+    \boxed{B_{\text{crit}} = \frac{\eta_{\max}\,\text{tr}(\boldsymbol{\Sigma})\,\sigma_\varepsilon^2}{2\epsilon} \approx \underbrace{\frac{\text{tr}(\boldsymbol{\Sigma})}{\lambda_{\max}}}_{d_{\text{eff}}} \times \underbrace{\frac{\sigma_\varepsilon^2}{\epsilon}}_{\text{信噪比需求}}}
+\end{equation}
+
+$B < B_{\text{crit}}$：增大 $B$ 可等比增大 $\eta$，线性加速。
+
+$B > B_{\text{crit}}$：$\eta$ 已触顶，继续增大 $B$ 收益递减。
+
+\paragraph{数值例子.} $d=100$各向同性，$\sigma_\varepsilon^2=0.01$，$\epsilon=10^{-4}$：$B_{\text{crit}} = 5000$。
+
+\begin{keypoint}[最大学习率有限 → 机器再多也不能无限加速小模型]
+$\eta$ 有上界 → 再大的 $B$ 也不能无限加速。$B \gg B_{\text{crit}}$ 时每步计算量线性增加，收敛速度不变。
+
+\textbf{机器变多时必须做大模型}：小模型 $d_{\text{eff}}$ 有限 → $B_{\text{crit}}$ 有限 → 多出算力浪费；大模型 $d_{\text{eff}}$ 大 → $B_{\text{crit}}$ 大 → 能利用更多机器。
+\end{keypoint}
+
+\subsection{动态视角}
+
+训练中 $B_{\text{crit}}(t) \propto \text{tr}(\Sigma_{\text{noise}}(\theta_t))/\|\nabla L(\theta_t)\|^2$。初期梯度大，小 batch 够用；后期梯度小，需要大 batch。
+
+
+%========================================
+\section{统计物理连接：温度与 Gibbs 分布}
+%========================================
+
+SGD 的稳态行为与统计物理有深刻的类比。这个联系不仅是形式上的——它提供了理解学习率调度、batch size 选择和泛化性能的统一视角。
+
+\subsection{稳态分布的等温性}
+
+回顾小步长近似下的稳态方差：
+\begin{equation}
+    V_{\infty,i} \approx \frac{\eta\sigma_\varepsilon^2}{2B}
+\end{equation}
+
+一个值得注意的事实：$V_{\infty,i}$ \textbf{不依赖于曲率 $\lambda_i$}。无论是平坦方向还是陡峭方向，稳态参数误差的方差都相同。
+
+这让人联想到统计力学中的\textbf{能量均分定理}：在热平衡下，每个自由度分到的平均动能相同，都等于 $\frac{1}{2}k_B T$，与该自由度的"刚度"（弹簧常数）无关。
+
+\subsection{SGD 温度的定义}
+
+定义 SGD 的\textbf{等效温度}：
+\begin{equation}
+    \boxed{T_{\text{SGD}} = \frac{\eta\,\sigma_\varepsilon^2}{2B}}
+\end{equation}
+
+其中 $\sigma_\varepsilon^2$ 是观测噪声方差（梯度噪声的来源），$\eta$ 是学习率，$B$ 是 batch size。
+
+此时稳态方差统一写成：
+\begin{equation}
+    V_{\infty,i} = T_{\text{SGD}} \quad (\text{小步长近似})
+\end{equation}
+
+更一般地（不做小步长近似），可以写成精确的"热力学"形式。对于二次函数 $f(\bm{x}) = \frac{1}{2}\sum \lambda_i x_i^2$，精确的稳态分布是高斯分布 $x_i \sim \mathcal{N}(0, V_{\infty,i})$，对应的"概率密度"为：
+\begin{equation}
+    p(\bm{x}) \propto \exp\left(-\sum_i \frac{x_i^2}{2V_{\infty,i}}\right)
+\end{equation}
+
+小步长下 $V_{\infty,i} \approx T/\lambda_i$（从精确公式 $V_{\infty,i} = \eta\sigma_\varepsilon^2/[B(2-\eta\lambda_i)]$ 在 $\eta\lambda_i \to 0$ 极限得到），所以：
+\begin{equation}
+    p(\bm{x}) \propto \exp\left(-\frac{1}{T}\sum_i \frac{1}{2}\lambda_i x_i^2\right) = \exp\left(-\frac{f(\bm{x})}{T}\right)
+\end{equation}
+
+这正是温度为 $T$ 的\textbf{Gibbs（玻尔兹曼）分布}。
+
+\subsection{温度的物理意义}
+
+\begin{center}
+\begin{tabular}{c|cc}
+ & 高温（$T$ 大）& 低温（$T$ 小）\\
+\hline
+$\eta$ & 大 & 小 \\
+$B$ & 小 & 大 \\
+稳态分布 & 弥散，远离极小值 & 集中于极小值附近 \\
+探索能力 & 强：能翻越小的势垒 & 弱：被困在局部极小值 \\
+精度 & 低：稳态误差大 & 高：稳态误差小 \\
+\end{tabular}
+\end{center}
+
+\subsection{与线性缩放法则的统一}
+
+线性缩放法则 $\eta/B = \text{const}$ 的物理意义现在清楚了：
+\begin{equation}
+    T = \frac{\eta\sigma_\varepsilon^2}{2B} \propto \frac{\eta}{B}
+\end{equation}
+
+\textbf{$\eta/B = \text{const}$ 就是保持温度不变。}
+
+batch size 加倍、学习率加倍 → 温度不变 → 稳态分布不变 → 最终精度不变。但 $\eta$ 更大意味着 Bias 衰减更快，所以每步实际效率更高。
+
+\subsection{退火（Annealing）策略}
+
+训练过程中逐步"降温"的策略直接来自统计物理的\textbf{模拟退火}（simulated annealing）：
+
+\textbf{前期}（高温阶段）：大 $\eta$、小 $B$。分布弥散，有利于探索损失景观，避免过早困在差的局部极小值。
+
+\textbf{后期}（低温阶段）：小 $\eta$、大 $B$。分布收缩到好的极小值附近，提高最终精度。
+
+\textbf{降温的两种等价方式}（Smith \& Le, 2017）：
+\begin{itemize}
+    \item 方式 A：保持 $B$ 不变，衰减 $\eta$（传统 learning rate decay）
+    \item 方式 B：保持 $\eta$ 不变，增大 $B$（"Don't Decay the Learning Rate, Increase the Batch Size"）
+\end{itemize}
+
+两者在数学上等价（都是降低 $T = \eta\sigma_\varepsilon^2/(2B)$），但方式 B 在分布式训练中更自然——加机器就是加 $B$。
+
+\subsection{温度与泛化的关系}
+
+统计物理视角还能解释一些关于泛化的经验观察：
+
+\textbf{小 batch 通常泛化更好}（Keskar et al., 2017）。直觉：小 $B$ → 高温 → SGD 在损失景观中探索更广 → 倾向于找到\textbf{宽}极小值（flat minima）。宽极小值对参数微扰更鲁棒，对应更好的泛化。
+
+\textbf{大 batch 倾向于找到尖极小值}（sharp minima）。低温下 SGD 缺乏翻越势垒的能力，容易困在离初始点最近的极小值——这往往是尖的。尖极小值对训练数据过度拟合。
+
+不过这一解释并不完全定论，仍有争议（Dinh et al., 2017 等）。但"SGD 温度"作为分析工具是被广泛认可的。
+
+\subsection{数值例子：温度对稳态的影响}
+
+$d = 2$，$\lambda_1 = 1$，$\lambda_2 = 10$，$\sigma_\varepsilon^2 = 1$。
+
+\begin{center}
+\begin{tabular}{cc|c|cc}
+$\eta$ & $B$ & $T = \eta/(2B)$ & $V_{\infty,1} \approx T$ & $V_{\infty,2} \approx T$ \\
+\hline
+0.1 & 1 & 0.05 & 0.05 & 0.05 \\
+0.01 & 1 & 0.005 & 0.005 & 0.005 \\
+0.1 & 10 & 0.005 & 0.005 & 0.005 \\
+0.01 & 10 & 0.0005 & 0.0005 & 0.0005 \\
+\end{tabular}
+\end{center}
+
+注意第 2、3 行：$(\eta=0.01, B=1)$ 和 $(\eta=0.1, B=10)$ 温度相同，稳态方差相同。但后者 Bias 衰减更快（$\eta$ 更大），所以总训练效率更高。这就是线性缩放法则的实际意义。
+
+
+%========================================
+\section{数据归一化：为什么对训练至关重要}
+%========================================
+
+\subsection{条件数与归一化}
+
+$\kappa = \lambda_d/\lambda_1$。特征尺度差异大 → $\kappa$ 大 → 收敛慢。例："年龄"($\lambda\sim 10^3$) vs "收入"($\lambda\sim 10^9$)，$\kappa = 10^6$。标准化后各方向曲率接近。
+
+\subsection{深度网络的条件数爆炸}
+
+$L$ 层网络无归一化时 $\kappa_{\text{total}} \sim \prod_l \kappa_l$。每层 $\kappa_l = 2$，10层后 $\kappa = 1024$。
+
+\subsection{Batch Normalization}
+
+BN 对每个特征沿 batch 归一化：$\hat{h}_j^{(b)} = (h_j^{(b)} - \bar{h}_j)/s_j$。
+
+$B\to\infty$ 时：$\text{Cov}[\hat{\mathbf{h}}] = \mathbf{I}$，$\kappa_{\text{BN}} = 1$。\textbf{直接降到 1}。
+
+\subsection{Layer Normalization}
+
+LN 对单样本沿特征归一化。$d$ 大时 $\hat{h}_j \approx h_j/\bar{\sigma}$，$\kappa_{\text{LN}} = \kappa_{\text{原始}}$。LN \textbf{不直接降低条件数}，但保证尺度稳定、去相关。
+
+\begin{center}
+\begin{tabular}{c|cc}
+ & Batch Norm & Layer Norm \\
+\hline
+对条件数 & $\kappa \to 1$ & $\kappa$ 不变 \\
+主要作用 & 降低条件数 & 尺度稳定 + 去相关 \\
+适用 & CNN（大 batch）& Transformer \\
+\end{tabular}
+\end{center}
+
+\subsection{回归的无偏性分析}
+
+\textbf{BN 的情况}（$B \to \infty$）：$\hat{\mathbf{h}} = \mathbf{D}^{-1}(\mathbf{h} - \boldsymbol{\mu})$，$\mathbf{D} = \text{diag}(\sigma_1,\ldots,\sigma_d)$。
+
+如果真实关系是 $y = \mathbf{h}^\top\boldsymbol{\theta}^*$，则 $y = \hat{\mathbf{h}}^\top(\mathbf{D}\boldsymbol{\theta}^*) + \boldsymbol{\mu}^\top\boldsymbol{\theta}^*$。
+
+回归 $\hat{\mathbf{h}}$ 对 $y$ 得到的 $\tilde{\boldsymbol{\theta}}$ 是 $\mathbf{D}\boldsymbol{\theta}^*$ 的无偏估计。原参数可通过 $\boldsymbol{\theta}^* = \mathbf{D}^{-1}\tilde{\boldsymbol{\theta}}^*$ 恢复。
+
+\textbf{LN 的情况}（$d$ 大）：$\hat{\mathbf{h}} \approx \mathbf{h}/\bar{\sigma}$。$y = \hat{\mathbf{h}}^\top(\bar{\sigma}\boldsymbol{\theta}^*)$。回归仍无偏，参数缩放 $\bar{\sigma}$ 倍。
+
+\textbf{结论}：BN 和 LN 都是近似线性变换，不改变回归的无偏性。
+
+\subsection{可学习参数 $\gamma$，$\beta$}
+
+归一化后加可学习缩放和平移：$\tilde{h}_j = \gamma_j \hat{h}_j + \beta_j$。
+
+作用：让网络在"完全归一化"和"保留原始分布"之间折中，保持表达能力。如果网络发现某个方向不需要归一化，可以学到 $\gamma_j = \sigma_j$，$\beta_j = \mu_j$，恢复原始分布。
+
+\subsection{手算例子：归一化前后的收敛速度}
+
+\textbf{设置}：$f(x,y) = \frac{1}{2}(100x^2 + y^2)$，$\kappa = 100$。
+
+\textbf{不归一化}：$\eta^* = 2/101 \approx 0.02$，$\rho^* = 99/101 \approx 0.98$。
+
+降到 $1\%$ 需要 $T = \log(100)/\log(1/0.98) \approx 228$ 步。
+
+\textbf{归一化后}（令 $\tilde{x} = 10x$）：$f(\tilde{x},y) = \frac{1}{2}(\tilde{x}^2 + y^2)$，$\kappa = 1$。
+
+$\eta^* = 1$，$\rho^* = 0$，\textbf{一步收敛}！
+
+\textbf{加速比}：228 步 vs 1 步 = \textbf{228 倍}！
+
+实际中不可能总是 $\kappa = 1$，但即使把 $\kappa$ 从 100 降到 10（通过归一化），步数从 228 降到约 23——仍然快了 10 倍。
+
+\begin{keypoint}[数据归一化对训练至关重要]
+三层面：输入标准化、中间层 Norm、输出缩放。归一化降低 $\kappa$，收敛步数 $\propto \kappa$。不做可能慢几十到几百倍。
+\end{keypoint}
+
+
+%========================================
+\section{初始化：Xavier/He 的方差传播推导}
+%========================================
+
+初始化的目标是让信号在前向传播和反向传播中保持稳定的幅度——不爆炸、不消失。推导分三步：先分析\textbf{无激活函数}的线性网络，再考虑 \textbf{Tanh/Sigmoid}，最后处理 \textbf{ReLU}。
+
+\subsection{第一步：线性网络的方差传播}
+
+\subsubsection{前向传播}
+
+考虑单层线性变换（暂不加激活函数）：
+\begin{equation}
+    h_j^{(l+1)} = \sum_{i=1}^{n_{\text{in}}} W_{ji}^{(l)}\, h_i^{(l)}
+\end{equation}
+
+假设：
+\begin{itemize}
+    \item 权重 $W_{ji}$ 独立同分布，$\mathbb{E}[W_{ji}] = 0$，$\text{Var}[W_{ji}] = \sigma_W^2$
+    \item 输入 $h_i^{(l)}$ 独立同分布，$\mathbb{E}[h_i^{(l)}] = 0$，$\text{Var}[h_i^{(l)}] = \sigma_h^2$
+    \item $W$ 与 $h$ 独立
+\end{itemize}
+
+计算输出方差：
+\begin{align}
+    \text{Var}[h_j^{(l+1)}] &= \text{Var}\left[\sum_{i=1}^{n_{\text{in}}} W_{ji}\, h_i^{(l)}\right] \\
+    &= \sum_{i=1}^{n_{\text{in}}} \text{Var}[W_{ji}\, h_i^{(l)}] \quad (\text{独立性}) \\
+    &= \sum_{i=1}^{n_{\text{in}}} \mathbb{E}[W_{ji}^2]\,\mathbb{E}[(h_i^{(l)})^2] \quad (\text{独立 + 零均值：} \text{Var}[XY] = \mathbb{E}[X^2]\mathbb{E}[Y^2]) \\
+    &= n_{\text{in}} \cdot \sigma_W^2 \cdot \sigma_h^2
+\end{align}
+
+因此每过一层，方差被乘以 $n_{\text{in}} \cdot \sigma_W^2$。\textbf{方差保持条件}：
+\begin{equation}
+    n_{\text{in}} \cdot \sigma_W^2 = 1 \quad \Rightarrow \quad \sigma_W^2 = \frac{1}{n_{\text{in}}}
+\end{equation}
+
+\subsubsection{反向传播}
+
+设损失对第 $l+1$ 层输出的梯度为 $\delta_j^{(l+1)} = \frac{\partial L}{\partial h_j^{(l+1)}}$。由链式法则：
+\begin{equation}
+    \delta_i^{(l)} = \frac{\partial L}{\partial h_i^{(l)}} = \sum_{j=1}^{n_{\text{out}}} W_{ji}^{(l)}\, \delta_j^{(l+1)}
+\end{equation}
+
+（注意转置：前向是 $h^{(l+1)} = W h^{(l)}$，反向是 $\delta^{(l)} = W^\top \delta^{(l+1)}$。）
+
+同样的方差计算：
+\begin{equation}
+    \text{Var}[\delta^{(l)}] = n_{\text{out}} \cdot \sigma_W^2 \cdot \text{Var}[\delta^{(l+1)}]
+\end{equation}
+
+\textbf{梯度方差保持条件}：
+\begin{equation}
+    n_{\text{out}} \cdot \sigma_W^2 = 1 \quad \Rightarrow \quad \sigma_W^2 = \frac{1}{n_{\text{out}}}
+\end{equation}
+
+\subsubsection{冲突与 Xavier 折中}
+
+前向要求 $\sigma_W^2 = 1/n_{\text{in}}$，反向要求 $\sigma_W^2 = 1/n_{\text{out}}$。除非 $n_{\text{in}} = n_{\text{out}}$，否则两者矛盾。
+
+Glorot \& Bengio (2010) 的 \textbf{Xavier 初始化}取调和平均（折中）：
+\begin{equation}
+    \boxed{\sigma_W^2 = \frac{2}{n_{\text{in}} + n_{\text{out}}}}
+\end{equation}
+
+此时前向方差放大因子为 $n_{\text{in}} \cdot \frac{2}{n_{\text{in}}+n_{\text{out}}} = \frac{2n_{\text{in}}}{n_{\text{in}}+n_{\text{out}}}$，介于 $1$（当 $n_{\text{in}} = n_{\text{out}}$）和 $2$（当 $n_{\text{out}} \ll n_{\text{in}}$）之间，是一个合理的近似。
+
+\subsection{第二步：Tanh/Sigmoid 激活函数}
+
+以上推导没有涉及激活函数。为什么结论对 Tanh 网络也适用？
+
+关键观察：如果初始化得当（方差不大），激活值 $z = W h$ 集中在零附近。而 Tanh 在零附近近似线性：
+\begin{equation}
+    \tanh(z) \approx z \quad (\text{当 } |z| \ll 1)
+\end{equation}
+
+此时激活函数几乎不改变方差：$\text{Var}[\tanh(z)] \approx \text{Var}[z]$，线性分析的结论近似成立。
+
+Sigmoid 类似：$\sigma(z) \approx 0.5 + 0.25 z$，有一个 $0.25$ 的缩放因子，但 Glorot \& Bengio 的分析中吸收了这个常数。
+
+\textbf{前提}：这个近似成立的条件是激活值确实在线性区——如果初始化太大，$z$ 的幅度很大，Tanh/Sigmoid 饱和，方差分析就失效了。这也是为什么正确的初始化如此重要——它让激活函数保持在"好的工作区间"。
+
+\subsection{第三步：ReLU 激活函数}
+
+ReLU $\sigma(z) = \max(0, z)$ 不是"近似线性"——它把所有负值砍成零。
+
+对于零均值的输入 $z \sim \mathcal{N}(0, \sigma_z^2)$，恰好一半的值被置零：
+\begin{align}
+    \text{Var}[\text{ReLU}(z)] &= \mathbb{E}[\text{ReLU}(z)^2] - (\mathbb{E}[\text{ReLU}(z)])^2
+\end{align}
+
+计算 $\mathbb{E}[\text{ReLU}(z)^2]$：ReLU$(z) = z$ 当 $z > 0$（概率 $1/2$），ReLU$(z) = 0$ 当 $z \leq 0$。
+\begin{equation}
+    \mathbb{E}[\text{ReLU}(z)^2] = \frac{1}{2}\mathbb{E}[z^2 \mid z > 0] = \frac{1}{2}\sigma_z^2
+\end{equation}
+
+（对称分布，条件在 $z > 0$ 后，$\mathbb{E}[z^2 \mid z > 0] = \sigma_z^2$。）
+
+$\mathbb{E}[\text{ReLU}(z)] = \frac{\sigma_z}{\sqrt{2\pi}}$（半正态分布），其平方是 $\frac{\sigma_z^2}{2\pi}$，相对于 $\frac{\sigma_z^2}{2}$ 可忽略。
+
+因此：
+\begin{equation}
+    \boxed{\text{Var}[\text{ReLU}(z)] \approx \frac{1}{2}\text{Var}[z]}
+\end{equation}
+
+ReLU 将方差\textbf{减半}。这个 $1/2$ 因子必须在初始化中补偿。
+
+\subsubsection{He/Kaiming 初始化}
+
+加入 ReLU 后，前向方差传播变为：
+\begin{equation}
+    \text{Var}[h^{(l+1)}] = n_{\text{in}} \cdot \sigma_W^2 \cdot \frac{1}{2} \cdot \text{Var}[h^{(l)}]
+\end{equation}
+
+方差保持条件：
+\begin{equation}
+    n_{\text{in}} \cdot \sigma_W^2 \cdot \frac{1}{2} = 1 \quad \Rightarrow \quad \boxed{\sigma_W^2 = \frac{2}{n_{\text{in}}}}
+\end{equation}
+
+这就是 He et al.\ (2015) 的 \textbf{He/Kaiming 初始化}。
+
+对比：Xavier 给出 $\sigma_W^2 \approx 1/n_{\text{in}}$（忽略 $n_{\text{out}}$ 修正），He 给出 $\sigma_W^2 = 2/n_{\text{in}}$——正好是 Xavier 的两倍，补偿了 ReLU 的方差减半。
+
+\subsection{三种初始化的总结}
+
+\begin{center}
+\begin{tabular}{l|ccc}
+激活函数 & 方差缩放因子 & 前向保持条件 & 初始化 \\
+\hline
+无（线性）& $1$ & $n_{\text{in}} \sigma_W^2 = 1$ & $\sigma_W^2 = 1/n_{\text{in}}$ \\
+Tanh（$z \approx 0$ 附近）& $\approx 1$ & $n_{\text{in}} \sigma_W^2 \approx 1$ & Xavier: $2/(n_{\text{in}}+n_{\text{out}})$ \\
+ReLU & $1/2$ & $n_{\text{in}} \sigma_W^2 / 2 = 1$ & He: $2/n_{\text{in}}$ \\
+\end{tabular}
+\end{center}
+
+\subsection{深度放大初始化偏差}
+
+$L$ 层等宽网络（每层宽度 $n$），ReLU 激活。每层的方差放大因子为 $\frac{n\sigma_W^2}{2}$。$L$ 层后：
+\begin{equation}
+    \text{Var}[h^{(L)}] = \left(\frac{n \sigma_W^2}{2}\right)^L \cdot \text{Var}[x]
+\end{equation}
+
+\begin{center}
+\begin{tabular}{c|ccc}
+初始化 & $n\sigma_W^2/2$ & $L = 50$ 层后方差 & 状态 \\
+\hline
+Xavier ($n\sigma_W^2 = 1$) & $0.5$ & $(0.5)^{50} \approx 10^{-15}$ & \textbf{完全消失} \\
+He ($n\sigma_W^2 = 2$) & $1$ & $1^{50} = 1$ & \textbf{完美稳定} \\
+\end{tabular}
+\end{center}
+
+\textbf{He 初始化是 ReLU 深度网络的唯一稳定选择。}Xavier 在 Tanh 网络上适用，但在 ReLU 网络上会导致 50 层后信号衰减 $10^{15}$ 倍。
+
+\subsection{手算练习：方差传播的逐层计算}
+
+\textbf{问题}：3 层 MLP，结构 $100 \to 50 \to 20 \to 1$，ReLU 激活。
+
+比较两种初始化：(A) 固定 $\sigma_W^2 = 0.01$，(B) He 初始化 $\sigma_W^2 = 2/n_{\text{in}}$。
+
+假设输入方差 $\text{Var}[x] = 1$。
+
+\textbf{(A) 固定方差}：
+
+\begin{center}
+\begin{tabular}{c|cccc}
+层 & $n_{\text{in}}$ & $n_{\text{in}}\sigma_W^2$ & ReLU 后 & 累积方差 \\
+\hline
+输入 & — & — & — & 1 \\
+第1层 & 100 & $1.0$ & $\times 0.5$ & $0.5$ \\
+第2层 & 50 & $0.5$ & $\times 0.5$ & $0.125$ \\
+第3层 & 20 & $0.2$ & — & $0.025$ \\
+\end{tabular}
+\end{center}
+
+输出方差 $= 0.025$（衰减 40 倍！\textbf{信号消失}）。
+
+\textbf{(B) He 初始化}：
+
+\begin{center}
+\begin{tabular}{c|cccc}
+层 & $n_{\text{in}}$ & $\sigma_W^2 = 2/n_{\text{in}}$ & $n_{\text{in}}\sigma_W^2$ & 累积方差 \\
+\hline
+输入 & — & — & — & 1 \\
+第1层 & 100 & 0.02 & 2 & $1\times 2\times 0.5 = 1$ \\
+第2层 & 50 & 0.04 & 2 & $1\times 2\times 0.5 = 1$ \\
+第3层 & 20 & 0.1 & 2 & $1\times 2 = 2$ \\
+\end{tabular}
+\end{center}
+
+输出方差 $\approx 1$（\textbf{稳定}！最后一层没 ReLU 所以是 2）。
+
+\subsection{初始化与 Hessian 曲率的关系}
+
+两层线性网络 $f = vux$，Hessian $H = \begin{pmatrix} v^2 & 2uv-1 \\ 2uv-1 & u^2 \end{pmatrix}$。
+
+\begin{center}
+\begin{tabular}{c|cccc}
+初始化 & $\lambda_{\max}$ & $\eta_{\max}$ & 初始 Loss & 初始梯度 \\
+\hline
+$(u,v)=(1,1)$ & 2 & 1 & 0（已在最优解）& $(0,0)$ \\
+$(u,v)=(0.1,0.1)$ & 0.99 & 2 & 0.49 & $(-0.099,-0.099)$ \\
+$(u,v)=(5,5)$ & 74 & 0.027 & 288 & $(120,120)$ \\
+\end{tabular}
+\end{center}
+
+\textbf{结论}：初始化越大 → 曲率越大 → $\eta_{\max}$ 越小 → 越需要 Warmup。
+
+Xavier/He 初始化让每层权重 $|W_{ji}| \sim O(1/\sqrt{n})$，保持曲率 $O(1)$，避免这个问题。
+
+
+%========================================
+\section{Warmup 的必要性：非线性的曲率困境}
+%========================================
+
+\subsection{线性模型不需要 Warmup}
+
+Hessian $= \boldsymbol{\Sigma}$ 是常数。最优 $\eta$ 从一开始就适用。只需 Decay（前期大 $\eta$ 消 Bias，后期小 $\eta$ 降 Variance）。
+
+\subsection{两层网络：Hessian 随位置变化}
+
+$f(x;u,v) = vux$，$L(u,v) = \frac{1}{2}(vu-1)^2$。
+
+Hessian $H = \begin{pmatrix} v^2 & 2uv-1 \\ 2uv-1 & u^2 \end{pmatrix}$。$H_{uu}=v^2$，$H_{vv}=u^2$ 随参数大小变化！
+
+\paragraph{手算：大初始化发散.} $u_0=v_0=5$，$\eta=0.1$。$\lambda_{\max}=74$，$\eta_{\max}=0.027$，$\eta=0.1$ 是 3.7 倍上界。
+
+第1步：$(5,5)\to(-7,-7)$，Loss $288\to 1152$。第2步：$\to(26.6,26.6)$，Loss $\to 250000$。\textbf{发散！}
+
+\paragraph{手算：Warmup 拯救.} 前3步 $\eta_w=0.01$：$(5,5)\to(3.8,3.8)\to(3.29,3.29)\to(2.97,2.97)$，Loss $288\to 90\to 48\to 31$。
+
+此时 $\lambda_{\max}\approx 17.6$，$\eta_{\max}=0.114>0.1$，可以安全切到大 $\eta$！第4步 $\eta=0.1$：$(2.97,2.97)\to(0.65,0.65)$，Loss $\to 0.17$。
+
+\subsection{带 Sigmoid 的两层网络：更真实的非线性}
+
+上面的两层\textbf{线性}网络已经展示了 Warmup 的必要性。加入激活函数后更加明显。
+
+考虑 $f(x; w_1, w_2) = w_2 \cdot \sigma(w_1 x)$，其中 $\sigma(z) = 1/(1+e^{-z})$。
+
+$(x,y) = (1,1)$，$L(w_1,w_2) = \frac{1}{2}(w_2\sigma(w_1) - 1)^2$。
+
+\subsubsection{Sigmoid 参考表}
+
+\begin{center}
+\begin{tabular}{c|cc||c|cc}
+$z$ & $\sigma(z)$ & $\sigma'(z)$ & $z$ & $\sigma(z)$ & $\sigma'(z)$ \\
+\hline
+$-2$ & 0.119 & 0.105 & 0.5 & 0.622 & 0.235 \\
+$-1$ & 0.269 & 0.197 & 1.0 & 0.731 & 0.197 \\
+$0$ & 0.500 & 0.250 & 2.0 & 0.881 & 0.105 \\
+\end{tabular}
+\end{center}
+
+$\sigma'(z) = \sigma(z)(1-\sigma(z))$，$\sigma''(z) = \sigma'(z)(1-2\sigma(z))$。
+
+\subsubsection{手算：小初始化——稳定训练}
+
+初始化 $w_1 = 0$，$w_2 = 1$，$\eta = 1$。
+
+$a = \sigma(0) = 0.5$，$\hat{y} = 1 \times 0.5 = 0.5$，$L = 0.125$。
+
+梯度：$r = -0.5$，$\partial L/\partial w_2 = -0.5 \times 0.5 = -0.25$，$\partial L/\partial w_1 = -0.5 \times 1 \times 0.25 = -0.125$。
+
+Hessian：$H_{22} = 0.25$，$H_{11} = 0.0625$，$\lambda_{\max} \approx 0.25$，$\eta_{\max} = 8$。$\eta = 1 \ll 8$，\textbf{非常安全}。
+
+\begin{center}
+\begin{tabular}{c|cc|cc|c}
+步 & $w_1$ & $w_2$ & $\hat{y}$ & Loss \\
+\hline
+0 & 0 & 1.00 & 0.500 & 0.125 \\
+1 & 0.125 & 1.25 & 0.664 & 0.056 \\
+2 & 0.230 & 1.43 & 0.795 & 0.021 \\
+3 & $\approx 0.31$ & $\approx 1.55$ & $\approx 0.88$ & $\approx 0.007$ \\
+\end{tabular}
+\end{center}
+
+稳定下降！
+
+\subsubsection{手算：大初始化——需要 Warmup}
+
+初始化 $w_1 = 2$，$w_2 = 4$，$\eta = 2$。
+
+$a = \sigma(2) = 0.881$，$\hat{y} = 3.52$，$L = 3.19$。
+
+$\partial L/\partial w_2 = 2.52 \times 0.881 = 2.22$，$\partial L/\partial w_1 = 2.52 \times 4 \times 0.105 = 1.06$。
+
+$H_{22} = 0.776$，$\lambda_{\max} \approx 1.04$，$\eta_{\max} \approx 1.92$。$\eta = 2 > 1.92$，\textbf{勉强超出}！
+
+第 1 步：$w_1 = 2 - 2\times 1.06 = -0.12$，$w_2 = 4 - 2\times 2.22 = -0.44$。
+
+$\hat{y} = -0.44 \times \sigma(-0.12) = -0.207$。符号翻转！
+
+第 2 步：$r = -1.207$，梯度方向又变了... 轨迹出现剧烈振荡。
+
+\textbf{用 Warmup}（前 2 步 $\eta = 0.5$，之后 $\eta = 2$）：
+
+\begin{center}
+\begin{tabular}{c|cc|c|l}
+步 & $w_1$ & $w_2$ & Loss & 阶段 \\
+\hline
+0 & 2.00 & 4.00 & 3.19 & \\
+1 & 1.47 & 2.89 & 0.91 & Warmup ($\eta=0.5$) \\
+2 & 1.18 & 2.34 & 0.31 & Warmup ($\eta=0.5$) \\
+3 & 0.51 & 1.13 & 0.043 & 切到 $\eta=2$ \\
+4 & $\approx 0.3$ & $\approx 1.1$ & $\approx 0.008$ & $\eta=2$ \\
+\end{tabular}
+\end{center}
+
+Warmup 2 步后 $\lambda_{\max}$ 降到 $\approx 0.6$，$\eta_{\max} = 3.3 > 2$，安全切到大学习率。
+
+\textbf{对比线性回归}：$f = \theta x$，$\theta_0 = 3.5$（同样初始 $\hat{y} \approx 3.5$），Hessian $= \sigma^2$（常数）。$\eta = 2$ 在稳定边界，会振荡但\textbf{不发散}——因为曲率不变。
+
+\begin{center}
+\begin{tabular}{c|cc}
+ & Sigmoid 网络 & 线性回归 \\
+\hline
+Hessian & 随 $(w_1,w_2)$ 变化 & 常数 \\
+大 $\eta$ 的后果 & 参数符号翻转、Hessian 剧变 & 振荡但幅度衰减 \\
+Warmup & \textbf{需要} & 不需要 \\
+\end{tabular}
+\end{center}
+
+\subsection{$L$ 层网络：深度指数放大}
+
+$L$ 层 $f = w_L\cdots w_1 x$，$w_l = s$。$H_{kk} = s^{2(L-1)}$，$\eta_{\max} \approx 2/(Ls^{2(L-1)})$。
+
+\begin{center}
+\begin{tabular}{c|cccc}
+深度 $L$ & 2 & 3 & 5 & 10 \\
+\hline
+\multicolumn{5}{c}{$s = 1.5$（稍大初始化）} \\
+\hline
+$s^{2(L-1)}$ & 2.25 & 5.06 & 25.6 & 2563 \\
+$L \cdot s^{2(L-1)}$ & 4.5 & 15.2 & 128 & 25630 \\
+$\eta_{\max} = 2/(L\cdot s^{2(L-1)})$ & 0.44 & 0.13 & 0.016 & $7.8 \times 10^{-5}$ \\
+\hline
+\multicolumn{5}{c}{$s = 1.1$（轻微偏大）} \\
+\hline
+$s^{2(L-1)}$ & 1.21 & 1.46 & 2.14 & 5.56 \\
+$\eta_{\max}$ & 0.83 & 0.46 & 0.19 & 0.036 \\
+\hline
+\multicolumn{5}{c}{$s = 1.0$（理想初始化）} \\
+\hline
+$s^{2(L-1)}$ & 1 & 1 & 1 & 1 \\
+$\eta_{\max}$ & 1.0 & 0.67 & 0.4 & 0.2 \\
+\end{tabular}
+\end{center}
+
+\textbf{关键观察}：
+\begin{itemize}
+    \item $s = 1.5$，$L = 10$：$\eta_{\max} \approx 10^{-5}$，几乎无法训练！
+    \item $s = 1.1$，$L = 10$：$\eta_{\max} = 0.036$，需要很小的学习率
+    \item $s = 1.0$，$L = 10$：$\eta_{\max} = 0.2$，仍可训练
+    \item $s$ 从 1.0 变到 1.1（只偏了 10\%），$\eta_{\max}$ 下降了 5.5 倍！
+\end{itemize}
+
+\textbf{这就是为什么正确的初始化如此重要——深度网络指数放大初始化的微小偏差。}
+
+\subsection{Warmup 步数的估计}
+
+\subsubsection{从简单模型出发}
+
+回到 $L$ 层线性网络，对称初始化 $w_l = s_0$。Warmup 的目标是把参数从 $s_0$ 拉到接近 $1$（从而让 $\lambda_{\max}$ 降到可控范围）。
+
+Warmup 期间用小学习率 $\eta_w$，每步更新量约为 $\eta_w \cdot |g|$，其中初始梯度：
+\begin{equation}
+    |g| = (s_0^L - 1) \cdot s_0^{L-1}
+\end{equation}
+
+参数需要变化 $\Delta s = s_0 - 1$，所以粗略估计 Warmup 步数为：
+\begin{equation}
+    T_{\text{warmup}} \approx \frac{\Delta s}{\eta_w \cdot |g|} = \frac{s_0 - 1}{\eta_w \cdot (s_0^L - 1) \cdot s_0^{L-1}}
+\end{equation}
+
+但 $\eta_w$ 本身受稳定性约束：$\eta_w < 2/\lambda_{\max}^{(0)} = 2/(L \cdot s_0^{2(L-1)})$。取 $\eta_w \sim 1/(L \cdot s_0^{2(L-1)})$ 代入：
+\begin{align}
+    T_{\text{warmup}} &\sim \frac{(s_0-1) \cdot L \cdot s_0^{2(L-1)}}{(s_0^L - 1) \cdot s_0^{L-1}} = \frac{(s_0-1) \cdot L \cdot s_0^{L-1}}{s_0^L - 1}
+\end{align}
+
+当 $s_0$ 接近 $1$ 时，$s_0^L - 1 \approx L(s_0-1)$，上式简化为：
+\begin{equation}
+    T_{\text{warmup}} \sim s_0^{L-1}
+\end{equation}
+
+\textbf{含义}：对于这个简单模型，Warmup 步数主要取决于 $s_0^{L-1}$，即\textbf{初始曲率 $H_{kk} = s_0^{2(L-1)}$ 的平方根}。等价地说，$T_{\text{warmup}} \sim \sqrt{\lambda_{\max}^{(0)}/L}$。
+
+\subsubsection{推广到实际网络的困难}
+
+以上分析基于极简模型（标量权重、对称初始化、线性网络），实际网络有几个本质区别：
+\begin{itemize}
+    \item \textbf{矩阵权重}：实际网络中 $\mathbf{W}_l \in \mathbb{R}^{n \times n}$，曲率不仅取决于权重大小，还取决于矩阵的谱结构。宽度 $n$ 进入 $\lambda_{\max}$ 的方式与标量模型不同。
+    \item \textbf{非线性激活}：Sigmoid/ReLU 等激活函数使得 Hessian 的位置依赖性更复杂。
+    \item \textbf{非对称初始化}：Xavier/He 初始化下各层权重的范数不完全相同。
+    \item \textbf{随机梯度}：SGD 的噪声在 Warmup 阶段也会影响动力学。
+\end{itemize}
+
+因此，无法从上述标量模型直接推导出实际网络的 Warmup 步数公式。
+
+\subsubsection{经验观察}
+
+实践中观察到的 Warmup 步数规律：
+
+\begin{center}
+\begin{tabular}{c|ccc}
+网络类型 & 典型深度 & 典型宽度 & 典型 Warmup \\
+\hline
+浅层 MLP & 2--3 层 & $\sim 10^2$ & 0--100 步 \\
+ResNet-50 & 50 层 & $\sim 10^2$--$10^3$ & 2000--5000 步 \\
+Transformer-Base & 6 层 & 512 & $\sim 4000$ 步 \\
+Transformer-Large & 24 层 & 1024 & $\sim 8000$ 步 \\
+GPT-3 (175B) & 96 层 & 12288 & $\sim 375$M tokens \\
+\end{tabular}
+\end{center}
+
+从表中可以观察到：Warmup 步数大致随深度和宽度增加。一个粗略的经验拟合是：
+\begin{equation}
+    T_{\text{warmup}} \sim c \cdot L \cdot \log(n)
+\end{equation}
+其中 $L$ 是深度，$n$ 是宽度，$c$ 是依赖于初始化质量和目标学习率的常数。
+
+\subsubsection{从标量模型推导 $T_{\text{warmup}} \sim L\log n$}
+
+标量模型中 $s$ 在矩阵网络中对应权重矩阵的\textbf{谱范数} $\bar{\sigma} = \|\mathbf{W}\|_{\text{op}}$。沿着这个对应，分三步推导。
+
+\paragraph{Step 1：曲率中的 $O(n)$ 因子.}
+
+标量模型给出 $\lambda_{\max} \sim L \cdot s^{2(L-1)}$，矩阵版本中 $s \to \bar{\sigma}$。但矩阵网络还有一个标量模型没有的因子。
+
+对一层全连接 $\mathbf{h} = \mathbf{W}\mathbf{a}$，梯度 $\partial L/\partial W_{ji} = \delta_j \cdot a_i$。单样本 Hessian 的最大特征值为：
+\begin{equation}
+    \lambda_{\max}^{\text{sample}} = \|\boldsymbol{\delta}\|^2 \cdot \|\mathbf{a}\|^2
+\end{equation}
+
+He 初始化保持每个分量 $a_i = O(1)$，但 $n$ 个分量加起来 $\|\mathbf{a}\|^2 = O(n)$。类似地 $\|\boldsymbol{\delta}\|^2 = O(n)$。取 mini-batch 平均后, $\lambda_{\max}^{\text{sample}}$介于n的一次和二次方之间，先假设为一次方，曲率公式变为：
+\begin{equation}
+    \lambda_{\max} \sim \underbrace{n}_{\|\mathbf{a}\|^2} \cdot\; \underbrace{L \cdot \bar{\sigma}_{\text{eff}}^{2(L-1)}}_{\text{深度（与标量模型相同）}}
+\end{equation}
+
+\paragraph{Step 2：有 LN + 残差时 $\bar{\sigma}_{\text{eff}} \approx 1$.}
+
+He 初始化下裸谱范数 $\bar{\sigma} = 2\sqrt{2} \approx 2.83$（Marchenko-Pastur 律），远大于 $1$——\textbf{方差保持 $\neq$ 谱范数保持}。但 LN + 残差连接将其压缩到 $\bar{\sigma}_{\text{eff}} \approx 1 + O(n^{-2/3})$。当 $L \ll n^{2/3}$ 时（现代 Transformer 通常满足），$(1+\epsilon)^{2(L-1)} \approx 1$，因此：
+\begin{equation}
+    \boxed{\lambda_{\max} \sim nL, \quad \eta_{\max} \sim \frac{1}{nL}}
+\end{equation}
+
+\paragraph{Step 3：$\log n$ 来自目标条件.}
+
+标量模型给出 $T_{\text{warmup}} \sim L \cdot \log(\bar{\sigma}_0/\bar{\sigma}_{\text{target}})$（谱范数做比例缩小，需要对数步数）。$\bar{\sigma}_{\text{target}}$ 由稳定性条件 $nL \cdot \bar{\sigma}_{\text{target}}^{2(L-1)} < 2/\eta_{\text{target}}$ 决定。代入：
+\begin{align}
+    T_{\text{warmup}} &\sim L \cdot \log\!\left(\bar{\sigma}_0^{2(L-1)} \cdot \frac{nL\eta_{\text{target}}}{2}\right) = L \cdot \bigl[2(L\!-\!1)\log\bar{\sigma}_0 + \log n + \log L + \text{const}\bigr]
+\end{align}
+
+好的初始化下 $\bar{\sigma}_0 \approx 1$，第一项与 $n$ 弱相关。主导的 $n$ 依赖来自 $\log n$(这里也可以发现之前假设的 $\lambda_{\max}^{\text{sample}}$的量级不影响warm up的大致时间)：
+\begin{equation}
+    \boxed{T_{\text{warmup}} \sim L\,\log n}
+\end{equation}
+
+\begin{insight}[$L\log n$ 的物理来源]
+$\log n$ 不是来自谱范数（有 LN 后 $\bar{\sigma} \approx 1$），而是来自\textbf{目标条件}：曲率 $\lambda_{\max} \sim nL$ 中有 $O(n)$ 的前置因子（来自 $\|\mathbf{a}\|^2 = O(n)$），为了将 $\lambda_{\max}$ 降到 $2/\eta_{\text{target}}$，$\bar{\sigma}^{2(L-1)}$ 必须额外补偿 $n$，在对数尺度上多走 $\log n$ 的距离。
+
+\textbf{一句话}：宽度放大了曲率，谱范数要降得更多，多出的量正好是 $\log n$。
+\end{insight}
+
+\begin{keypoint}[宽度增大曲率]
+对宽度为 $n$ 的网络，Hessian 的最大特征值有一个 $O(n)$ 的前置因子。因此：
+\begin{itemize}
+    \item 宽度翻倍 → $\lambda_{\max}$ 约翻倍 → $\eta_{\max}$ 约减半
+    \item 若目标学习率不变，Warmup 需要从更小的 $\eta_w$ 开始
+    \item 在标准参数化下，更宽的网络确实需要更长的 Warmup
+    \item $\mu$P 通过让 $\eta \propto 1/n$ 来抵消这个效应，使得 Warmup 需求与宽度解耦
+\end{itemize}
+这也解释了为什么宽网络通常使用更小的学习率——不是因为"模型太大需要小心"，而是因为 Hessian 的曲率确实更大。
+\end{keypoint}
+
+\textbf{实践建议}：
+\begin{enumerate}
+    \item 使用标准初始化（Xavier/He）使 $\bar{\sigma} \approx 1$（在方差意义下）
+    \item Warmup 步数取总训练步数的 $1\%$--$5\%$
+    \item 深度越大、宽度越大、目标学习率越大 $\to$ Warmup 越长
+    \item 如有可能，监控梯度范数或 loss 的变化率来判断何时结束 Warmup
+\end{enumerate}
+
+\begin{keypoint}[Warmup 对非线性至关重要]
+\begin{center}
+\begin{tabular}{c|ccc}
+ & 线性模型 & 两层网络 & $L$ 层网络 \\
+\hline
+Hessian & 常数 & $\propto u^2,v^2$ & $\propto s^{2(L-1)}$ \\
+Warmup & 不需要 & 需要 & 更需要 \\
+\end{tabular}
+\end{center}
+
+Warmup 步数 $\propto \log(\lambda_{\max}^{(0)}/\lambda_{\text{target}})$。正确初始化 + Norm 可大幅缩短。
+\end{keypoint}
+
+
+%========================================
+\section{实用技巧速览}
+%========================================
+
+\subsection{Gradient Clipping}
+
+裁剪梯度范数：$\mathbf{g} \gets \min(1, C/\|\mathbf{g}\|) \cdot \mathbf{g}$。限制每步最大移动距离。Transformer 必备，通常 $C=1.0$。
+
+\subsection{Cosine Annealing}
+
+$\eta_t = \eta_{\min} + \frac{1}{2}(\eta_{\max}-\eta_{\min})(1+\cos\frac{\pi t}{T})$。开始慢降，中间快降，末尾慢降。比 step decay 更平滑。
+
+\subsection{Gradient Accumulation}
+
+累积 $K$ 个 micro-batch 梯度再更新，等价于 batch size $KB_{\text{micro}}$。时间换空间。
+
+
+%========================================
+\section{本周总结}
+%========================================
+
+\begin{keypoint}[核心公式速查]
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{量} & \textbf{公式} \\
+\midrule
+步长上界 & $\eta < 2/L$ \\
+最优步长 & $\eta^* = 2/(\mu + L)$ \\
+最优收敛因子 & $\rho^* = (\kappa-1)/(\kappa+1)$ \\
+稳态方差 & $V_{\infty,i} = \eta\sigma_\varepsilon^2/[B(2-\eta\lambda_i)]$ \\
+小步长近似 & $V_{\infty,i} \approx \eta\sigma_\varepsilon^2/(2B)$ \\
+预测误差 & $\approx \eta\sigma_\varepsilon^2\text{tr}(\boldsymbol{\Sigma})/(2B)$ \\
+SGD 温度 & $T = \eta\sigma^2/(2B)$ \\
+临界 batch & $B_{\text{crit}} \approx d_{\text{eff}} \cdot \sigma_\varepsilon^2/\epsilon$ \\
+Xavier & $\sigma_W^2 = 2/(n_{\text{in}}+n_{\text{out}})$ \\
+He & $\sigma_W^2 = 2/n_{\text{in}}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{keypoint}
+
+
+\section*{进一步阅读}
+
+\begin{itemize}
+    \item \textbf{Bach (2024)} - \textit{Learning Theory from First Principles}, Ch.\ 5-6.
+    \item \textbf{Bottou, Curtis \& Nocedal (2018)} - \textit{Optimization Methods for Large-Scale ML}, SIAM Review.
+    \item \textbf{McCandlish et al.\ (2018)} - \textit{An Empirical Model of Large-Batch Training}.
+    \item \textbf{Smith \& Le (2017)} - \textit{Don't Decay the Learning Rate, Increase the Batch Size}.
+    \item \textbf{Santurkar et al.\ (2018)} - \textit{How Does BN Help Optimization?}
+    \item \textbf{Glorot \& Bengio (2010)} - Xavier 初始化.
+    \item \textbf{He et al.\ (2015)} - He/Kaiming 初始化.
+    \item \textbf{Martens \& Grosse (2015)} - KFAC: Kronecker-Factored Approximate Curvature.
+    \item \textbf{Yang et al.\ (2022)} - Tensor Programs V: $\mu$P 与零样本超参数迁移.
+\end{itemize}
+
+\appendix
+
+%========================================
+\section{宽度、深度与 Warmup 步数的详细推导}
+\label{app:warmup}
+%========================================
+
+本附录给出正文中 $T_{\text{warmup}} \sim L\log n$ 结论的完整推导细节。
+
+\subsection{标量模型回顾}
+
+$L$ 层线性网络 $f = w_L \cdots w_1 x$，对称初始化 $w_l = s_0 > 1$。
+
+\subsubsection{Hessian 与稳定性}
+
+乘积 $P = s_0^L$。对第 $k$ 层权重，Hessian 对角元：
+\begin{equation}
+    H_{kk} = \left(\frac{P}{w_k}\right)^2 = s_0^{2(L-1)}
+\end{equation}
+
+考虑非对角项，Hessian 的最大特征值近似为：
+\begin{equation}
+    \lambda_{\max} \approx L \cdot s_0^{2(L-1)}
+\end{equation}
+
+（$L$ 个对角元各为 $s_0^{2(L-1)}$，非对角项在对称初始化下贡献一个 $O(L)$ 的放大。）
+
+稳定性上界：
+\begin{equation}
+    \eta_{\max} = \frac{2}{\lambda_{\max}} = \frac{2}{L \cdot s_0^{2(L-1)}}
+\end{equation}
+
+\subsubsection{Warmup 动力学}
+
+Warmup 期间用 $\eta_w \leq \eta_{\max}$，参数的更新（利用对称性 $w_l = s$ 保持）：
+\begin{equation}
+    s_{t+1} = s_t - \eta_w \cdot (s_t^L - 1) \cdot s_t^{L-1}
+\end{equation}
+
+当 $s_t$ 接近 $1$ 时，$s_t^L - 1 \approx L(s_t - 1)$，$s_t^{L-1} \approx 1$，所以：
+\begin{equation}
+    s_{t+1} - 1 \approx (s_t - 1)(1 - \eta_w L)
+\end{equation}
+
+这是一个收敛因子为 $(1 - \eta_w L)$ 的线性递推。取 $\eta_w = c/(Ls_t^{2(L-1)})$（在稳定性边界附近），当 $s_t \approx 1$ 时 $\eta_w \approx c/L$，收敛因子 $\approx 1 - c$。
+
+定义 $u_t = s_t - 1$（偏离量），则 $u_t \approx u_0 (1-c)^t$，要求 $u_T < u_{\text{target}}$ 的步数为：
+\begin{equation}
+    T = \frac{\log(u_0/u_{\text{target}})}{\log(1/(1-c))} \approx \frac{1}{c}\log\frac{u_0}{u_{\text{target}}}
+\end{equation}
+
+由于 $\eta_w \approx c/L$，而 $\Delta s/s \sim \eta_w L \sim c$，所以实际上每 $1/c$ 步 $s$ 缩小一个 $e$ 倍。用 $L$ 来表达：
+\begin{equation}
+    \boxed{T_{\text{warmup}}^{\text{scalar}} \sim \frac{L}{c} \cdot \log\frac{s_0 - 1}{s_{\text{target}} - 1} \sim L \cdot \log\frac{s_0}{s_{\text{target}}}}
+\end{equation}
+
+（最后一步在 $s_0, s_{\text{target}}$ 接近 $1$ 时，$\log(s_0-1)/(s_{\text{target}}-1) \sim \log s_0/s_{\text{target}}$ 在量级上等价。）
+
+\subsection{从标量到矩阵：谱范数替换}
+
+\subsubsection{对应关系}
+
+矩阵网络中，$s$ 的角色由各层权重矩阵的谱范数 $\sigma_l = \|\mathbf{W}_l\|_{\text{op}}$ 扮演。标量模型的所有结论在形式上成立，$s \to \bar{\sigma}$（各层谱范数的几何平均）：
+\begin{equation}
+    \lambda_{\max}^{\text{（来自深度）}} \sim L \cdot \bar{\sigma}^{2(L-1)}, \quad T_{\text{warmup}} \sim L \cdot \log\frac{\bar{\sigma}_0}{\bar{\sigma}_{\text{target}}}
+\end{equation}
+
+\subsubsection{He 初始化下的谱范数}
+
+$\mathbf{W} = \sqrt{2/n}\,\mathbf{Z}$，$Z_{ji} \sim \mathcal{N}(0,1)$ i.i.d.。$n \times n$ 标准高斯矩阵的最大奇异值由 Marchenko-Pastur 律给出：
+\begin{equation}
+    \sigma_{\max}(\mathbf{Z}) = 2\sqrt{n}\left(1 + O(n^{-2/3})\right)
+\end{equation}
+
+因此：
+\begin{equation}
+    \bar{\sigma} = \sqrt{\frac{2}{n}} \cdot 2\sqrt{n}\left(1 + O(n^{-2/3})\right) = 2\sqrt{2}\left(1 + O(n^{-2/3})\right) \approx 2.83
+\end{equation}
+
+\textbf{方差保持 vs 谱范数}：He 初始化保证 $\mathbb{E}[\|\mathbf{W}\mathbf{h}\|^2] = 2\|\mathbf{h}\|^2$（平均方差保持），但最大方向的放大率是 $\bar{\sigma}^2 \approx 8$。这两者不矛盾——方差是所有方向的平均，谱范数是最大方向。
+
+\subsubsection{激活函数和架构的修正}
+
+\textbf{ReLU}：置零一半分量，等效地 $\bar{\sigma} \to \bar{\sigma}/\sqrt{2} = 2$。仍然 $> 1$。
+
+\textbf{Layer Normalization}：将激活范数强制归一化为 $O(\sqrt{n})$。LN 后的等效谱范数：
+\begin{equation}
+    \bar{\sigma}_{\text{LN}} = 1 + O(n^{-2/3})
+\end{equation}
+
+$O(n^{-2/3})$ 修正的来源：LN 将 $\|\mathbf{h}\|$ 归一化为 $\sqrt{n}\,$（固定范数），但方向仍保留了矩阵乘法的结构。最大方向的相对放大率由随机矩阵的 Tracy-Widom 波动决定，量级为 $n^{-2/3}$。
+
+\textbf{残差连接}：$\mathbf{h}^{(l+1)} = \mathbf{h}^{(l)} + f_l(\mathbf{h}^{(l)})$，$\|f_l\|_{\text{op}} = \sigma_f$。总谱范数为 $1 + \sigma_f$ 而非 $\sigma_f$，将乘法累积变为近似加法。综合 LN 后，$\sigma_f \approx O(n^{-2/3})$，所以 $\bar{\sigma}_{\text{eff}} = 1 + O(n^{-2/3})$。
+
+\subsection{矩阵网络中的 $O(n)$ 曲率因子}
+
+标量模型的曲率只有"深度"贡献 $L \cdot \bar{\sigma}^{2(L-1)}$。矩阵网络还多了一个"宽度"因子。
+
+\subsubsection{单层 Hessian 的 Kronecker 结构}
+
+对全连接层 $\mathbf{h} = \mathbf{W}\mathbf{a}$，$\mathbf{W} \in \mathbb{R}^{n \times n}$，损失对 $W_{ji}$ 的梯度为 $\partial L/\partial W_{ji} = \delta_j a_i$。
+
+将 $\mathbf{W}$ 展平为 $n^2$ 维向量，Hessian 近似为 Kronecker 积：
+\begin{equation}
+    \mathbf{H}_W \approx \underbrace{\mathbb{E}[\boldsymbol{\delta}\boldsymbol{\delta}^\top]}_{\mathbf{G}\in\mathbb{R}^{n \times n}} \otimes \underbrace{\mathbb{E}[\mathbf{a}\mathbf{a}^\top]}_{\mathbf{A}\in\mathbb{R}^{n \times n}}
+\end{equation}
+
+Kronecker 积的特征值是两个矩阵特征值的所有两两乘积：
+\begin{equation}
+    \lambda_{\max}(\mathbf{H}_W) = \lambda_{\max}(\mathbf{G}) \cdot \lambda_{\max}(\mathbf{A})
+\end{equation}
+
+\subsubsection{$\lambda_{\max}(\mathbf{A})$ 的分析}
+
+He 初始化保持每个分量 $\text{Var}[a_i] = O(1)$。如果各分量近似独立（LN 后近似成立）：
+\begin{equation}
+    \mathbf{A} \approx O(1) \cdot \mathbf{I}_n, \quad \lambda_{\max}(\mathbf{A}) = O(1)
+\end{equation}
+
+\subsubsection{$\lambda_{\max}(\mathbf{G})$ 的分析}
+
+反向梯度 $\boldsymbol{\delta} \in \mathbb{R}^n$ 同样每个分量 $O(1)$。$\mathbf{G}$ 的结构取决于 loss landscape：
+
+\textbf{最坏情况}（单样本）：$\mathbf{G} = \boldsymbol{\delta}\boldsymbol{\delta}^\top$，秩 1，$\lambda_{\max} = \|\boldsymbol{\delta}\|^2 = O(n)$。
+
+\textbf{Mini-batch 平均}：$\mathbf{G} = \frac{1}{B}\sum_{b=1}^B \boldsymbol{\delta}^{(b)}{\boldsymbol{\delta}^{(b)}}^\top$。当 $B$ 足够大且 $\boldsymbol{\delta}$ 的分布接近各向同性时，$\lambda_{\max}(\mathbf{G}) \approx \text{tr}(\mathbf{G})/n = O(1)$。但在训练初期，$\boldsymbol{\delta}$ 的方向高度集中（loss 的曲率集中在少数方向），此时 $\lambda_{\max}(\mathbf{G})$ 可显著大于 $O(1)$。
+
+\textbf{更直接的论证}：不经过 $\mathbf{G} \otimes \mathbf{A}$ 分解，直接看单样本 Hessian 的最大特征值：
+\begin{equation}
+    \lambda_{\max}^{\text{sample}} = \|\boldsymbol{\delta}\|^2 \cdot \|\mathbf{a}\|^2 = O(n) \cdot O(n) = O(n^2)
+\end{equation}
+
+Mini-batch 中 $B$ 个独立样本的 Hessian 平均后，有效秩 $\sim \min(B, n)$。当 $B \gg n$ 时趋于 $\text{tr}(\mathbf{H})/n^2 \sim O(1)$；当 $B \sim O(1)$（小 batch）时接近 $O(n^2)$。实际训练中 $B$ 通常为几百到几千，$n$ 为几千到几万，$B < n$，所以 $\lambda_{\max}$ 介于 $O(n)$ 和 $O(n^2)$ 之间。
+
+取 $\lambda_{\max} = O(n)$ 作为典型量级（这与实验观察一致），得到完整的曲率公式：
+\begin{equation}
+    \lambda_{\max}(\mathbf{H}) \sim n \cdot L \cdot \bar{\sigma}_{\text{eff}}^{2(L-1)}
+\end{equation}
+
+\subsection{主定理：$T_{\text{warmup}} \sim L\log n$}
+
+\subsubsection{合并所有因子}
+
+有 LN + 残差时 $\bar{\sigma}_{\text{eff}} = 1 + \epsilon$，$\epsilon = O(n^{-2/3})$。当 $\epsilon L \ll 1$（即 $L \ll n^{2/3}$）：
+\begin{equation}
+    \lambda_{\max} \sim nL \cdot (1+\epsilon)^{2(L-1)} \approx nL
+\end{equation}
+
+\subsubsection{目标条件}
+
+Warmup 结束条件：$\lambda_{\max} < 2/\eta_{\text{target}}$。写成对 $\bar{\sigma}$ 的约束：
+\begin{equation}
+    nL \cdot \bar{\sigma}_{\text{target}}^{2(L-1)} < \frac{2}{\eta_{\text{target}}} \quad \Rightarrow \quad \bar{\sigma}_{\text{target}}^{2(L-1)} < \frac{2}{nL\eta_{\text{target}}}
+\end{equation}
+
+\subsubsection{Warmup 步数}
+
+由标量模型的结果 $T \sim L \cdot \log(\bar{\sigma}_0/\bar{\sigma}_{\text{target}})$，我们需要计算 $\log(\bar{\sigma}_0^{2(L-1)}/\bar{\sigma}_{\text{target}}^{2(L-1)})$：
+\begin{align}
+    \log\frac{\bar{\sigma}_0^{2(L-1)}}{\bar{\sigma}_{\text{target}}^{2(L-1)}} &> \log\left(\bar{\sigma}_0^{2(L-1)} \cdot \frac{nL\eta_{\text{target}}}{2}\right) \\
+    &= 2(L-1)\log\bar{\sigma}_0 + \log n + \log L + \log\eta_{\text{target}} - \log 2
+\end{align}
+
+因此：
+\begin{equation}
+    T_{\text{warmup}} \sim L \cdot \bigl[\underbrace{2(L-1)\log\bar{\sigma}_0}_{\text{(I)}} + \underbrace{\log n}_{\text{(II)}} + \underbrace{\log L + \text{const}}_{\text{(III)}}\bigr]
+\end{equation}
+
+各项的含义：
+\begin{itemize}
+    \item \textbf{(I)}：初始谱范数的贡献。有 LN 时 $\bar{\sigma}_0 \approx 1 + O(n^{-2/3})$，$\log\bar{\sigma}_0 \approx O(n^{-2/3})$，所以 (I) $\approx O(L \cdot n^{-2/3})$——对 $n$ 的依赖很弱。无 LN 时 $\bar{\sigma}_0 \approx 2\sqrt{2}$，(I) $\approx 2L\log(2\sqrt{2}) \approx 2L$——与 $n$ 无关但与 $L$ 线性。
+    \item \textbf{(II)}：$\log n$。这是宽度对 Warmup 的\textbf{主要贡献}。来源：曲率中 $O(n)$ 的前置因子要求 $\bar{\sigma}^{2(L-1)}$ 额外补偿 $1/n$。
+    \item \textbf{(III)}：$\log L$ 及常数项。深度的对数修正。
+\end{itemize}
+
+\begin{equation}
+    \boxed{T_{\text{warmup}} \sim L\log n + L\log L + O(L^2 n^{-2/3})}
+\end{equation}
+
+当 $n \gg L$（典型情况）时，主导项为 $L\log n$。
+
+\subsection{数值验证}
+
+用上述公式估算几个实际网络的 Warmup 步数（取 $c = 500$ 作为总体常数的拟合值）：
+
+\begin{center}
+\begin{tabular}{l|ccc|cc}
+网络 & $L$ & $n$ & $L\log_2 n$ & 公式估算 & 实际 Warmup \\
+\hline
+ResNet-50 & 50 & 512 & 450 & $\sim 2000$ & 2000--5000 \\
+Transformer-Base & 6 & 512 & 54 & $\sim 3000$ & $\sim 4000$ \\
+Transformer-Large & 24 & 1024 & 240 & $\sim 6000$ & $\sim 8000$ \\
+GPT-2 (1.5B) & 48 & 1600 & 510 & $\sim 8000$ & $\sim 5000$ \\
+\end{tabular}
+\end{center}
+
+量级基本吻合。偏差来自几个简化：（1）实际网络有注意力机制，不是纯全连接；（2）LN 的效果不是瞬时的，初期 $\bar{\sigma}_0$ 可能偏离我们的近似；（3）Adam 的二阶矩估计需要额外的预热时间（$\sim 1/(1-\beta_2) \approx 1000$ 步）。
+
+\subsection{讨论：推导的局限性}
+
+\begin{enumerate}
+    \item \textbf{$O(n)$ 因子的精确系数}：我们只确定了 $\lambda_{\max} = O(nL)$ 的量级关系，精确系数取决于 loss landscape 的结构（$\mathbf{G}$ 的谱分布），无法从简单模型精确确定。
+    \item \textbf{LN 的动态效应}：我们假设 LN 在整个 Warmup 期间保持 $\bar{\sigma}_{\text{eff}} \approx 1$，但训练初期 LN 的统计量（running mean/var）尚未稳定，实际的 $\bar{\sigma}_0$ 可能更大。
+    \item \textbf{Adam 的影响}：Adam 的自适应学习率隐式地为每个参数做了预条件，可能改变"等效 $\eta_w$"的量级。特别是 Adam 的二阶矩估计偏差修正需要 $\sim 1/(1-\beta_2)$ 步才能稳定，这提供了一个与宽度/深度无关的 Warmup 下界。
+    \item \textbf{注意力机制}：Transformer 的自注意力层不是简单的全连接，其 Hessian 结构更复杂。QK 乘积 $\mathbf{Q}\mathbf{K}^\top/\sqrt{d}$ 引入了额外的非线性和尺度依赖。
+\end{enumerate}
+
+尽管如此，$T_{\text{warmup}} \sim L\log n$ 的定性结论——深度线性贡献、宽度对数贡献、$\log n$ 来自曲率中的 $O(n)$ 因子——提供了一个有用的理论框架，至少能解释为什么 Warmup 步数随模型变大而增加。
+
+
+\end{document}

@@ -1,0 +1,360 @@
+\documentclass[12pt, a4paper]{ctexart}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb, amsthm, mathtools}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{bm}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins, breakable}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{优化算法：从理论到大规模实践}
+\fancyhead[R]{第5周习题}
+\fancyfoot[C]{\thepage}
+
+\newtcolorbox{hint}[1][]{
+    colback=yellow!5,
+    colframe=orange!50,
+    fonttitle=\bfseries,
+    title={提示},
+    breakable
+}
+
+\begin{document}
+
+\begin{center}
+{\LARGE\bfseries 第5周习题：SGD基础与线性缩放}
+
+\vspace{0.3cm}
+{\large 共 10 题，覆盖 GD 收敛、SGD 方差、偏差-方差分解、\\线性缩放、Regret、归一化、初始化、Warmup}
+\end{center}
+
+\vspace{0.5cm}
+
+%========================================
+\section*{习题 1：一维 GD 的收敛因子}
+%========================================
+
+$f(x) = \frac{1}{2} \cdot 5 x^2$（即 $k = 5$），初始点 $x_0 = 2$。
+
+\begin{enumerate}
+    \item[(a)] 写出 GD 的稳定性条件（$\eta$ 的范围）。
+    
+    \item[(b)] 分别计算 $\eta = 0.1,\; 0.2,\; 0.35,\; 0.42$ 时的收敛因子 $\rho = |1 - \eta k|$，并判断每种情况是\textbf{单调收敛}（$0 < 1-\eta k < 1$）、\textbf{振荡收敛}（$-1 < 1-\eta k < 0$）还是\textbf{发散}（$|1-\eta k| \geq 1$）。
+    
+    \item[(c)] 对 $\eta = 0.2$，写出 $x_t$ 的通项公式 $x_t = x_0 \cdot (1-\eta k)^t$，并手算 $x_0, x_1, x_2, x_3, x_4$。
+    
+    \item[(d)] 对 (b) 中的四个 $\eta$，分别计算达到 $|x_t| < 0.01$ 需要多少步。（对发散的情形说明为什么无法达到。）
+\end{enumerate}
+
+\begin{hint}
+$\rho^T < 0.01/2 = 0.005$ 意味着 $T > \log(0.005)/\log(\rho)$。
+\end{hint}
+
+
+%========================================
+\section*{习题 2：二维最优步长}
+%========================================
+
+$f(x,y) = \frac{1}{2}(2x^2 + 50y^2)$，即 $\mu = 2$，$L = 50$，$\kappa = 25$。
+
+\begin{enumerate}
+    \item[(a)] 计算 GD 稳定上界 $\eta_{\max} = 2/L$。
+    
+    \item[(b)] 计算最优步长 $\eta^* = 2/(\mu + L)$ 和最优收敛因子 $\rho^* = (\kappa-1)/(\kappa+1)$。
+    
+    \item[(c)] 分别对 $\eta_A = 1/L$（保守）和 $\eta_B = \eta^*$（最优），计算两个方向的收敛因子 $\rho_x = |1-\eta\mu|$，$\rho_y = |1-\eta L|$，以及整体 $\rho = \max(\rho_x, \rho_y)$。
+    
+    \item[(d)] 从 $(x_0, y_0) = (1, 1)$ 出发，用 $\eta^*$ 手算 3 步迭代。每步写出 $(x_t, y_t)$ 和 $f(x_t, y_t)$。$y$ 方向是否振荡？为什么？
+    
+    \item[(e)] 将误差降到初始值的 $0.1\%$ 需要 $\rho^T < 0.001$。分别计算 $\eta_A$ 和 $\eta_B$ 所需的步数 $T$。$\eta^*$ 比 $\eta = 1/L$ 快了多少倍？
+\end{enumerate}
+
+
+%========================================
+\section*{习题 3：SGD 无偏性与梯度方差}
+%========================================
+
+一维线性回归：$x \sim \mathcal{N}(0, \lambda)$，$y = \theta^* x + \varepsilon$，$\varepsilon \sim \mathcal{N}(0, \sigma_\varepsilon^2)$。定义参数误差 $e_t = a_t - \theta^*$。单样本随机梯度为 $g_t = e_t \cdot x_t^2 - \varepsilon_t \cdot x_t$。
+
+\begin{enumerate}
+    \item[(a)] 计算条件期望 $\mathbb{E}[g_t \mid e_t]$。（利用 $x_t, \varepsilon_t$ 与 $e_t$ 独立，$\mathbb{E}[x^2] = \lambda$，$\mathbb{E}[\varepsilon] = 0$。）证明随机梯度是\textbf{无偏}的。
+    
+    \item[(b)] 计算 $\mathbb{E}[g_t^2 \mid e_t]$。展开 $g_t^2 = e_t^2 x_t^4 - 2e_t x_t^3 \varepsilon_t + \varepsilon_t^2 x_t^2$，然后取期望。需要用到高斯分布的矩：$\mathbb{E}[x^3] = 0$，$\mathbb{E}[x^4] = 3\lambda^2$。
+    
+    \item[(c)] 由此推导梯度方差 $\text{Var}[g_t \mid e_t] = \mathbb{E}[g_t^2] - (\mathbb{E}[g_t])^2 = 2e_t^2\lambda^2 + \lambda\sigma_\varepsilon^2$。
+    
+    \item[(d)] 解释两项的物理意义：$2e_t^2\lambda^2$ 在前期和后期哪个主导？$\lambda\sigma_\varepsilon^2$ 呢？
+    
+    \item[(e)] 如果使用 mini-batch $B = 16$，方差变为多少？写出公式并代入 $\lambda = 4$，$\sigma_\varepsilon^2 = 0.01$，$e_t = 1$。
+\end{enumerate}
+
+\begin{hint}
+$\mathbb{E}[x^4] = 3(\mathbb{E}[x^2])^2$ 对高斯分布成立（四阶矩公式）。
+\end{hint}
+
+
+%========================================
+\section*{习题 4：稳态方差与偏差-方差分解}
+%========================================
+
+延续习题 3 的设置：$\lambda = 4$，$\sigma_\varepsilon^2 = 0.01$，$B = 1$，$\eta = 0.2$，初始误差 $e_0 = 5$。
+
+\begin{enumerate}
+    \item[(a)] 写出误差二阶矩的递推公式（后期近似，忽略方差中与 $e_t^2$ 相关的项）：
+    \[
+    \mathbb{E}[e_{t+1}^2] = (1-\eta\lambda)^2\,\mathbb{E}[e_t^2] + \frac{\eta^2\lambda\sigma_\varepsilon^2}{B}
+    \]
+    计算 $(1-\eta\lambda)^2$ 和噪声注入项 $\eta^2\lambda\sigma_\varepsilon^2/B$ 的数值。
+    
+    \item[(b)] 求稳态方差 $V_\infty$。列出完整推导：从不动点条件出发，展开 $1-(1-\eta\lambda)^2 = \eta\lambda(2-\eta\lambda)$，解出 $V_\infty = \eta\sigma_\varepsilon^2/[B(2-\eta\lambda)]$。代入数值。
+    
+    \item[(c)] 计算稳态预测误差 $\lambda \cdot V_\infty$。
+    
+    \item[(d)] 分别计算以下修改后的 $V_\infty$，验证 $V_\infty \propto \eta/B$：
+    \begin{center}
+    \begin{tabular}{c|cc}
+    & $\eta = 0.2,\; B = 1$ & $\eta = 0.1,\; B = 1$ \\
+    \hline
+    $V_\infty$ & （来自 (b)）& \\
+    \end{tabular}
+    \quad
+    \begin{tabular}{c|cc}
+    & $\eta = 0.2,\; B = 1$ & $\eta = 0.2,\; B = 2$ \\
+    \hline
+    $V_\infty$ & （来自 (b)）& \\
+    \end{tabular}
+    \end{center}
+    
+    \item[(e)] 用偏差-方差分解公式填写下表（$\rho = |1-\eta\lambda| = |1-0.8| = 0.2$）：
+    \[
+    \mathbb{E}[e_t^2] = \rho^{2t}\,e_0^2 + V_\infty(1 - \rho^{2t})
+    \]
+    \begin{center}
+    \begin{tabular}{c|ccc}
+    $t$ & Bias$^2 = 0.04^t \times 25$ & Variance $= V_\infty(1 - 0.04^t)$ & 总误差 \\
+    \hline
+    0 & & & \\
+    1 & & & \\
+    3 & & & \\
+    5 & & & \\
+    10 & & & \\
+    \end{tabular}
+    \end{center}
+    
+    估算转折步数（Bias$^2 \approx$ Variance 的 $t$）。在转折点之后，应该如何调整 $\eta$？为什么？
+\end{enumerate}
+
+
+%========================================
+\section*{习题 5：线性缩放法则与临界 Batch Size}
+%========================================
+
+$d = 50$ 维线性回归，各向同性 $\lambda_i = 1$（$\text{tr}(\boldsymbol{\Sigma}) = 50$），$\sigma_\varepsilon^2 = 0.04$，目标精度 $\epsilon = 10^{-3}$。
+
+\begin{enumerate}
+    \item[(a)] 写出稳态预测误差的小步长近似：$\text{预测误差}_\infty \approx \frac{\eta\sigma_\varepsilon^2\,\text{tr}(\boldsymbol{\Sigma})}{2B}$。
+
+    \item[(b)] 当前 $\eta = 0.1$，$B = 32$。代入计算稳态预测误差。是否满足 $\leq \epsilon$？
+    
+    \item[(c)] 将 $B$ 增大到 $128$。按线性缩放法则 $\eta/B = \text{const}$，$\eta$ 应调到多少？验证稳态误差不变。Bias 衰减速度如何变化？
+    
+    \item[(d)] 计算临界 batch size。取 $\eta_{\max} = 2/L = 2$（各向同性时 $L = 1$）：
+    \[
+    B_{\text{crit}} = \frac{\eta_{\max}\,\text{tr}(\boldsymbol{\Sigma})\,\sigma_\varepsilon^2}{2\epsilon}
+    \]
+    
+    \item[(e)] 令 $B = 10000 \gg B_{\text{crit}}$。此时 $\eta$ 最大只能取 $\eta_{\max} = 2$。计算对应的稳态预测误差。与 $B = B_{\text{crit}}$ 时比较：$B$ 增大了多少倍？误差降低了多少倍？说明收益递减。
+\end{enumerate}
+
+
+%========================================
+\section*{习题 6：Regret 的计算与学习率衰减}
+%========================================
+
+一维问题：$\lambda = 1$，$\sigma_\varepsilon^2 = 1$，$B = 1$，$e_0 = 10$。
+
+\begin{enumerate}
+    \item[(a)] 对固定步长 $\eta$，期望累积 regret 近似为：
+    \[
+    \text{Regret}_T \approx \underbrace{\frac{e_0^2}{4\eta}}_{\text{Bias 总贡献}} + \underbrace{\frac{T\eta\lambda\sigma_\varepsilon^2}{4}}_{\text{Variance 累积}}
+    \]
+    解释两项的来源（Bias 的几何级数求和、Variance 的线性累积）。
+    
+    \item[(b)] 取 $T = 10000$，分别计算 $\eta = 0.01$、$\eta = 0.1$、$\eta = 1.0$ 时的 Regret。填表：
+    \begin{center}
+    \begin{tabular}{c|ccc}
+    $\eta$ & Bias 项 $e_0^2/(4\eta)$ & Var 项 $T\eta/(4)$ & 总 Regret \\
+    \hline
+    0.01 & & & \\
+    0.1 & & & \\
+    1.0 & & & \\
+    \end{tabular}
+    \end{center}
+    哪个 $\eta$ 最好？最好的那个两项是否接近平衡？
+    
+    \item[(c)] 对 $\eta$ 求导令其为零，推导最优固定步长 $\eta^* = e_0/(\sigma_\varepsilon\sqrt{T\lambda})$。代入 $T = 10000$ 计算 $\eta^*$ 和 $\text{Regret}_T^*$。验证 $\text{Regret}^* = O(\sqrt{T})$。
+    
+    \item[(d)] 对衰减步长 $\eta_t = 1/(\lambda t)$，每步期望 excess loss $\approx c/t$。估算 $\text{Regret}_{10000} \approx c \sum_{t=1}^{10000} 1/t \approx c(\ln 10000 + 0.577)$。取 $c = L/(2\mu) = 1/2$，计算结果。与 (c) 比较差多少倍？
+    
+    \item[(e)] 如果训练开始前不知道 $T$（不知道要训练多久），固定步长需要 $T$ 来选 $\eta^*$，而衰减步长 $\eta_t = 1/t$ 不需要。从实用角度，你推荐哪种？如果 $T$ 已知呢？
+\end{enumerate}
+
+
+%========================================
+
+
+%========================================
+\section*{习题 7：Xavier 与 He 初始化的方差传播}
+%========================================
+
+3 层 MLP，结构 $784 \to 256 \to 64 \to 10$。前两层用 ReLU 激活，最后一层无激活。
+
+\begin{enumerate}
+    \item[(a)] 计算每层的 Xavier 初始化方差 $\sigma_W^2 = 2/(n_{\text{in}}+n_{\text{out}})$：
+    \begin{center}
+    \begin{tabular}{c|ccc}
+    层 & $n_{\text{in}}$ & $n_{\text{out}}$ & Xavier $\sigma_W^2$ \\
+    \hline
+    1 & 784 & 256 & \\
+    2 & 256 & 64 & \\
+    3 & 64 & 10 & \\
+    \end{tabular}
+    \end{center}
+    
+    \item[(b)] 计算每层的 He 初始化方差 $\sigma_W^2 = 2/n_{\text{in}}$：
+    \begin{center}
+    \begin{tabular}{c|cc}
+    层 & $n_{\text{in}}$ & He $\sigma_W^2$ \\
+    \hline
+    1 & 784 & \\
+    2 & 256 & \\
+    3 & 64 & \\
+    \end{tabular}
+    \end{center}
+    
+    \item[(c)] 用 He 初始化，假设输入方差 $\text{Var}[x] = 1$，逐层计算前向方差。每层的放大因子为 $n_{\text{in}} \cdot \sigma_W^2 \cdot \frac{1}{2}$（ReLU 减半），最后一层无 ReLU 所以不乘 $1/2$：
+    \begin{center}
+    \begin{tabular}{c|cccc}
+    层 & $n_{\text{in}} \sigma_W^2$ & ReLU? & 放大因子 & 累积方差 \\
+    \hline
+    输入 & — & — & — & 1 \\
+    1 & & 是 & & \\
+    2 & & 是 & & \\
+    3 & & 否 & & \\
+    \end{tabular}
+    \end{center}
+    
+    \item[(d)] 如果错误地用固定 $\sigma_W^2 = 0.001$，重复 (c) 的计算。输出方差是多少？与 (c) 差多少倍？
+    
+    \item[(e)] 将网络加深到 6 层 $784 \to 256 \to 256 \to 256 \to 256 \to 256 \to 10$（前 5 层 ReLU，最后一层无激活），分别用 He 和固定 $\sigma_W^2 = 0.001$ 计算输出方差。深度如何放大初始化偏差？
+\end{enumerate}
+
+\begin{hint}
+He 初始化下每层（带 ReLU）的放大因子 $= n_{\text{in}} \cdot (2/n_{\text{in}}) \cdot 1/2 = 1$，所以方差严格保持。
+\end{hint}
+
+
+%========================================
+\section*{习题 8：两层网络的 Warmup 体验}
+%========================================
+
+两层线性网络 $f(x; u, v) = v \cdot u \cdot x$，单样本 $(x,y) = (1,1)$，MSE 损失 $L(u,v) = \frac{1}{2}(vu-1)^2$。
+
+梯度：$\partial L/\partial u = (vu-1)v$，$\partial L/\partial v = (vu-1)u$。
+
+Hessian：$\mathbf{H} = \begin{pmatrix} v^2 & 2uv-1 \\ 2uv-1 & u^2 \end{pmatrix}$。
+
+\begin{enumerate}
+    \item[(a)] 初始化 $u_0 = v_0 = 3$。计算：初始 Loss、梯度、Hessian 矩阵。求 Hessian 的特征值（$\lambda = \frac{u^2+v^2}{2} \pm \sqrt{(\frac{u^2-v^2}{2})^2 + (2uv-1)^2}$，对称初始化时简化为 $v^2 \pm (2uv-1)$）。
+    
+    \item[(b)] 计算 $\eta_{\max} = 2/\lambda_{\max}$。
+    
+    \item[(c)] 用 $\eta = 0.05$（满足稳定性），执行 3 步 GD。每步写出 $(u_t, v_t)$、$L_t$。
+    
+    \item[(d)] 用 $\eta = 0.15$（\textbf{不}满足稳定性），执行 3 步 GD。Loss 是上升还是下降？
+    
+    \item[(e)] Warmup 方案：前若干步用 $\eta_w = 0.03$，每步之后检查当前点的 $\lambda_{\max}$ 是否满足 $\eta = 0.15 < 2/\lambda_{\max}$。找到最早可以安全切换的步数 $T_w$，然后切到 $\eta = 0.15$ 继续执行 2 步。
+    
+    填写汇总表：
+    \begin{center}
+    \begin{tabular}{c|ccc}
+    步 & $(u_t, v_t)$ & $L_t$ & 阶段 \\
+    \hline
+    0 & $(3, 3)$ & & \\
+    1 & & & Warmup ($\eta_w$) \\
+    $\vdots$ & & & \\
+    $T_w$ & & & 切换 \\
+    $T_w+1$ & & & $\eta = 0.15$ \\
+    $T_w+2$ & & & $\eta = 0.15$ \\
+    \end{tabular}
+    \end{center}
+    
+    对比：无 Warmup 的 $\eta = 0.15$ 在第 3 步的 Loss vs 有 Warmup 方案在同一步的 Loss。
+\end{enumerate}
+
+\section*{习题 9：归一化对收敛速度的影响}
+%========================================
+
+$f(x,y) = \frac{1}{2}(10000\,x^2 + y^2)$，$\kappa = 10000$。
+
+\begin{enumerate}
+    \item[(a)] 计算 $\eta^* = 2/(\mu+L) = 2/(1+10000)$，$\rho^* = (\kappa-1)/(\kappa+1)$。降到 $1\%$ 需要多少步？（$T = \log(100)/\log(1/\rho^*)$）
+    
+    \item[(b)] 做变量替换 $\tilde{x} = 100\,x$，代入 $f$：
+    \[
+    f(\tilde{x}/100,\, y) = \frac{1}{2}\left(10000 \cdot \frac{\tilde{x}^2}{10000} + y^2\right) = \frac{1}{2}(\tilde{x}^2 + y^2)
+    \]
+    归一化后 $\kappa = ?$
+    
+    \item[(c)] 对归一化后的问题，$\eta^* = ?$，$\rho^* = ?$，降到 $1\%$ 需要多少步？
+    
+    \item[(d)] 归一化将步数从 (a) 的结果降到了 (c) 的结果。加速比是多少？
+    
+    \item[(e)] 推广：$d = 100$，$\lambda_{\max} = 10^6$，$\lambda_{\min} = 1$。不归一化 $\kappa = 10^6$，收敛步数 $\sim \kappa/2 \cdot \log(100) \approx ?$。标准化后 $\kappa \approx 1$，步数 $\approx ?$。
+\end{enumerate}
+
+
+%========================================
+\section*{习题 10：综合设计题}
+%========================================
+
+你拿到一个回归数据集：$d = 200$ 个特征，$n = 50000$ 个样本。经过初步分析：
+\begin{itemize}
+    \item 特征未归一化，方差范围从 $0.01$ 到 $10^4$
+    \item 观测噪声 $\sigma_\varepsilon^2 \approx 0.1$
+    \item 你打算用 5 层 MLP（隐藏层宽度 512）+ ReLU 训练
+    \item GPU 内存支持 micro-batch $B_{\text{micro}} = 128$
+\end{itemize}
+
+\begin{enumerate}
+    \item[(a)] \textbf{条件数分析}：未归一化时 $\kappa \approx \lambda_{\max}/\lambda_{\min} = 10^4/0.01 = ?$。用最优步长 GD，消除 Bias 到 $1\%$ 需要 $\sim (\kappa/2)\log(100) \approx ?$ 步。
+    
+    \item[(b)] \textbf{归一化}：标准化后各特征方差 $\approx 1$，$\kappa \approx ?$。收敛步数变为多少？加速多少倍？
+    
+    \item[(c)] \textbf{初始化}：ReLU 网络应选 Xavier 还是 He？写出每层的 $\sigma_W^2$（结构 $200 \to 512 \to 512 \to 512 \to 512 \to 1$）。
+    
+    \item[(d)] \textbf{学习率估算}：利用 $\lambda_{\max} \sim nL$（$n = 512$，$L = 5$），估算 $\eta_{\max} \sim 2/(nL)$。你会选择 $\eta_{\text{target}} \approx \eta_{\max}/3$ 到 $\eta_{\max}/4$——这是多少？
+    
+    \item[(e)] \textbf{Batch size 与线性缩放}：你决定用 $B = 1024$（gradient accumulation 8 步）。如果 $B = 128$ 时最优 $\eta = 0.001$，线性缩放给出 $B = 1024$ 时 $\eta = ?$。
+    
+    \item[(f)] \textbf{临界 batch size}：$B_{\text{crit}} \approx d_{\text{eff}} \cdot \sigma_\varepsilon^2/\epsilon$。取 $d_{\text{eff}} \approx d = 200$，目标 $\epsilon = 10^{-3}$。$B_{\text{crit}} = ?$。$B = 1024$ 是否超过 $B_{\text{crit}}$？还有增大 $B$ 的空间吗？
+    
+    \item[(g)] \textbf{完整训练方案}：综合以上分析，写出你的训练方案（一段话即可）：
+    \begin{itemize}
+        \item 数据预处理
+        \item 初始化方法
+        \item 学习率与 batch size
+        \item Warmup 策略（步数、形状）
+        \item 学习率衰减（Cosine/Step Decay）
+        \item 是否需要 Gradient Clipping
+    \end{itemize}
+    对每个选择，用一句话说明理由（引用本讲的哪个结论）。
+\end{enumerate}
+
+
+\end{document}
