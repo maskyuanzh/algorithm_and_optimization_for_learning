@@ -1,0 +1,2759 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[UTF8]{ctex}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{tcolorbox}
+\usepackage{tikz}
+\usetikzlibrary{positioning}
+\usepackage{bm}
+\usepackage{caption}
+\usepackage{array}
+\usepackage{colortbl}
+\usepackage{longtable}
+\usepackage{multirow}
+
+\tcbuselibrary{theorems,skins,breakable}
+
+\newtcbtheorem[number within=section]{theorem}{定理}{
+  colback=blue!5,colframe=blue!50!black,fonttitle=\bfseries}{thm}
+\newtcbtheorem[number within=section]{definition}{定义}{
+  colback=green!5,colframe=green!50!black,fonttitle=\bfseries}{def}
+\newtcbtheorem[number within=section]{remark}{备注}{
+  colback=orange!5,colframe=orange!50!black,fonttitle=\bfseries}{rem}
+
+\newtcolorbox{handcalc}[1]{
+  colback=gray!8,colframe=gray!60!black,fonttitle=\bfseries,
+  title={{\large $\bigstar$} 手算 #1},breakable}
+
+\newtcolorbox{classexercise}[1]{
+  colback=cyan!5,colframe=cyan!60!black,fonttitle=\bfseries,
+  title={{\large $\triangleright$} 课堂练习 #1},breakable}
+
+\newtcolorbox{teachingtip}{
+  colback=orange!5,colframe=orange!60!black,fonttitle=\bfseries,
+  title={教学提示}}
+
+\newtcolorbox{keyinsight}[1][]{
+  colback=red!5,colframe=red!60!black,fonttitle=\bfseries,
+  title={关键直觉 #1}}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\cN}{\mathcal{N}}
+\newcommand{\cH}{\mathcal{H}}
+\newcommand{\bTheta}{\boldsymbol{\Theta}}
+\newcommand{\bu}{\mathbf{u}}
+\newcommand{\by}{\mathbf{y}}
+\newcommand{\bJ}{\mathbf{J}}
+\newcommand{\bK}{\mathbf{K}}
+\newcommand{\bI}{\mathbf{I}}
+\newcommand{\br}{\mathbf{r}}
+\newcommand{\bv}{\mathbf{v}}
+\newcommand{\bw}{\mathbf{w}}
+\newcommand{\bx}{\mathbf{x}}
+
+\title{\textbf{优化算法} \\ \Large 第六周：从Neural Tangent Kernel到$\mu$P \\ ——跨模型的超参数迁移}
+\author{讲义}
+\date{2025年春季学期}
+
+\begin{document}
+\maketitle
+
+\begin{tcolorbox}[colback=yellow!10,colframe=yellow!60!black,title=\textbf{本周核心问题}]
+\begin{itemize}[leftmargin=*]
+\item 为什么在小模型上调好的超参数，直接用到大模型上往往失败？
+\item 训练过程中，网络到底在``学特征''还是在``做核回归''？
+\item 是否存在一种参数化方式，使得最优超参数\textbf{与模型宽度无关}？
+\end{itemize}
+\end{tcolorbox}
+
+\begin{teachingtip}
+\textbf{本周教学节奏（两次课，每次$\sim$100分钟）：}
+
+\textbf{第一次课：NTK}（手算1--5 + 练习1--4）
+\begin{itemize}[leftmargin=*]
+\item 0--20min：手算1（单神经元NTK，完整6步）
+\item 20--25min：练习1（换数据）
+\item 25--50min：一般定义 + 两层网络NTK推导（手算2，完整展开）
+\item 50--70min：手算3（$m=4$个ReLU神经元，学生自己算）+ 练习2
+\item 70--80min：Jacot三大定理 + 手算4（量级分析）
+\item 80--95min：核回归 + 手算5（闭式预测）+ 练习3（提前停止）
+\item 95--100min：NTK的致命缺陷（留悬念）
+\end{itemize}
+
+\textbf{第二次课：$\mu$P}（手算6--10 + 练习5--8）
+\begin{itemize}[leftmargin=*]
+\item 0--15min：动机 + $\mu$P定义
+\item 15--35min：abc-参数化推导（手算6，完整展开）
+\item 35--60min：核心对比手算7（NTK vs $\mu$P，分组并排计算）+ 练习5
+\item 60--75min：超参数迁移定理 + 手算8（学习率曲线）+ 练习6
+\item 75--90min：Transformer的$\mu$P（手算9，注意力缩放）+ 手算10（完整梯度下降对比）
+\item 90--100min：全景图 + 开放问题 + 作业布置
+\end{itemize}
+
+全程叙事线：\textbf{为什么你在A100上调好的学习率，换到H200集群上跑大模型就炸了？}
+\end{teachingtip}
+
+\tableofcontents
+\newpage
+
+%=============================================================================
+\section*{第零节：大模型训练的现实——为什么超参数迁移重要？}
+\addcontentsline{toc}{section}{第零节：大模型训练的现实}
+%=============================================================================
+
+\begin{teachingtip}
+这一节是\textbf{动机铺垫}，用10分钟让学生对大模型训练的``体量''有具体感知。很多学生只在单卡上跑过小实验，对``一次训练花几百万美元''没有概念。用具体数字建立直觉后，后面讲$\mu$P的实用价值时学生才会觉得``这确实是个大问题''。
+\end{teachingtip}
+
+\subsection*{主流模型到底多大？}
+
+\textbf{（一）大语言模型（LLM）}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{llcccc}
+\toprule
+模型 & 年份 & 参数量 & 层数$L$ & $d_{\text{model}}$ & 训练数据量 \\
+\midrule
+GPT-2 & 2019 & 1.5B & 48 & 1600 & 40GB文本 \\
+GPT-3 & 2020 & 175B & 96 & 12288 & 570GB（300B tokens）\\
+LLaMA-2-70B & 2023 & 70B & 80 & 8192 & 2T tokens \\
+LLaMA-3-405B & 2024 & 405B & 126 & 16384 & 15T tokens \\
+DeepSeek-V3 & 2024 & 671B (MoE) & 61 & 7168 & 14.8T tokens \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{参数量粗略估计}（decoder-only Transformer）：$P \approx 12\,L\,d_{\text{model}}^2$。每层$\approx 12d^2$（attention的$W_Q,W_K,W_V,W_O$共$4d^2$，FFN共$8d^2$）。验证：LLaMA-2-70B：$12\times 80\times 8192^2\approx 64B$，接近70B。$\checkmark$
+
+\textbf{数据量的量纲感：``token''到底是什么？}
+
+训练数据量用``token''计量。Token\textbf{不是}单词，而是经过\textbf{BPE（Byte-Pair Encoding）}分词后的子词单元。BPE的核心思想是：从单个字符开始，反复合并出现频率最高的相邻字符对，直到词表达到预设大小（通常32K--128K个token）。
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lll}
+\toprule
+原始文本 & BPE分词结果 & token数 \\
+\midrule
+``Hello world'' & [``Hello'', ``\textvisiblespace world''] & 2 \\
+``unbelievable'' & [``un'', ``believ'', ``able''] & 3 \\
+``深度学习'' & [``深度'', ``学习''] 或 [``深'', ``度'', ``学'', ``习''] & 2--4 \\
+``transformers'' & [``transform'', ``ers''] & 2 \\
+``\#\#\#ERROR 404'' & [``\#\#\#'', ``ERROR'', ``\textvisiblespace 404''] & 3 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{经验换算：}
+\begin{itemize}[leftmargin=*]
+\item 英文：1 token $\approx$ 0.75个单词 $\approx$ 4个字符。``A nice day''$=$3个词$\approx$3--4个token。
+\item 中文：1个汉字$\approx$1--2个token（取决于词表）。中文文本的token数通常比英文多30--50\%。
+\item 代码：变量名和关键字通常是1个token，但长变量名会被拆分。
+\end{itemize}
+
+\textbf{大数字的直觉：}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{rcl}
+\toprule
+Token数 & $\approx$ & 等价于 \\
+\midrule
+1B（$10^9$） & $\approx$ & 4GB原始文本 $\approx$ 4000本书 \\
+1T（$10^{12}$） & $\approx$ & 4TB原始文本 $\approx$ 400万本书 $\approx$ 英文维基百科的250倍 \\
+15T & $\approx$ & 60TB $\approx$ 整个公开互联网文本的多次遍历 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+LLaMA-3在15T tokens上训练，相当于把互联网``读了十几遍''。注意：不同模型用不同的BPE词表（LLaMA用SentencePiece，GPT用tiktoken），所以\textbf{不同模型的``1T tokens''对应的原始文本量略有差异}，但量级一致。
+
+\textbf{（提问学生：为什么不直接用字符或单词作为token？——字符太细粒度，序列太长，attention复杂度$O(s^2)$爆炸。单词词表太大（英文$>$100万个词形），且无法处理新词。BPE是中间方案：词表小（$\sim$32K--128K），覆盖率高，序列长度适中。）}
+
+\bigskip
+\textbf{（二）图像生成模型（Diffusion / Flow Matching）}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{llccc}
+\toprule
+模型 & 年份 & 参数量 & 架构 & 训练数据 \\
+\midrule
+Stable Diffusion 1.5 & 2022 & 0.9B & UNet & LAION-5B（50亿图文对）\\
+SDXL & 2023 & 3.5B & UNet & 内部数据集 \\
+Stable Diffusion 3.5 & 2024 & 8B & MMDiT & 内部数据集 \\
+DALL$\cdot$E 3 & 2023 & 未公开 & UNet & 内部数据+合成caption \\
+FLUX.1 & 2024 & 12B & MMDiT & 未公开 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+趋势：从UNet（$\sim$1B）到Diffusion Transformer/MMDiT（$\sim$8--12B），参数量增长了$\sim$10倍。架构从CNN转向了Transformer——\textbf{与LLM用同样的骨架}，所以$\mu$P的参数化理论同样适用。
+
+\bigskip
+\textbf{（三）视频生成模型}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{llccc}
+\toprule
+模型 & 年份 & 参数量（估） & 训练数据 & 训练成本（估）\\
+\midrule
+Sora (v1) & 2024 & 未公开（$\sim$3--10B?） & 未公开 & 4K--10K张H100$\times$1月 \\
+Open-Sora 2.0 & 2025 & $\sim$1--3B & 30M视频片段（80K小时） & \textbf{\$200K}（公开） \\
+Movie Gen (Meta) & 2024 & 30B & 未公开 & 6144张GPU \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+视频生成的计算量远超图像：每帧是一张图，加上帧间的时序attention。生成10秒视频的推理成本$\approx$几千次ChatGPT查询。
+
+\bigskip
+\textbf{（四）视觉识别模型（对比用）}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{llcc}
+\toprule
+模型 & 年份 & 参数量 & 训练数据 \\
+\midrule
+ResNet-50 & 2015 & 25M & ImageNet（1.2M张图，1000类） \\
+ViT-Large & 2020 & 307M & ImageNet/JFT-300M \\
+DINOv2-giant & 2023 & 1.1B & LVD-142M（1.42亿张图）\\
+CLIP ViT-L/14 & 2021 & 428M & WIT（4亿图文对） \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{（提问学生：你平时跑的模型多大？——可能是ResNet-50（25M）或BERT-base（110M）。GPT-3是BERT的1600倍，FLUX是ResNet-50的480倍。这就是为什么``在小模型上调好的超参数直接迁移''是一个价值几百万美元的问题。）}
+
+\bigskip
+\textbf{（五）全景对比：参数量 vs 训练数据量}
+
+\begin{center}
+\begin{tikzpicture}[scale=0.85]
+\draw[->] (0,0) -- (13,0) node[right] {参数量（log scale）};
+\draw[->] (0,0) -- (0,7) node[above] {训练数据};
+\foreach \x/\lab in {1/25M, 3/300M, 5/1B, 7/8B, 9/70B, 11/405B} {
+  \draw (\x,0.1) -- (\x,-0.1) node[below,font=\tiny] {\lab};
+}
+% Vision
+\fill[blue!60] (1,1) circle (3pt) node[right,font=\tiny] {ResNet-50};
+\fill[blue!60] (3.5,1.5) circle (3pt) node[right,font=\tiny] {ViT-L};
+\fill[blue!60] (5.2,2.5) circle (3pt) node[above,font=\tiny] {DINOv2};
+% Image gen
+\fill[red!60] (5,3) circle (3pt) node[left,font=\tiny] {SD 1.5};
+\fill[red!60] (6.5,3.5) circle (3pt) node[right,font=\tiny] {SDXL};
+\fill[red!60] (7.5,4) circle (3pt) node[right,font=\tiny] {SD 3.5};
+\fill[red!60] (8,4.2) circle (3pt) node[right,font=\tiny] {FLUX};
+% LLM
+\fill[green!60!black] (5.5,2) circle (3pt) node[left,font=\tiny] {GPT-2};
+\fill[green!60!black] (9.5,4.5) circle (3pt) node[right,font=\tiny] {LLaMA-2-70B};
+\fill[green!60!black] (10.5,5.5) circle (3pt) node[right,font=\tiny] {GPT-3};
+\fill[green!60!black] (11.5,6.5) circle (3pt) node[right,font=\tiny] {LLaMA-3-405B};
+% Legend
+\fill[blue!60] (0.5,6.5) circle (3pt); \node[right,font=\small] at (0.8,6.5) {视觉识别};
+\fill[red!60] (0.5,6) circle (3pt); \node[right,font=\small] at (0.8,6) {图像生成};
+\fill[green!60!black] (0.5,5.5) circle (3pt); \node[right,font=\small] at (0.8,5.5) {语言模型};
+\end{tikzpicture}
+\end{center}
+
+\textbf{关键观察：}所有领域都在沿``参数量$\uparrow$，数据量$\uparrow$''的方向scaling。Diffusion模型正在经历LLM三年前走过的路——从$\sim$1B到$\sim$10B再到更大。\textbf{$\mu$P的超参数迁移在每个领域的scaling过程中都有价值。}
+
+\subsection*{这些模型的内部长什么样？——CNN vs Transformer}
+
+本周的理论（NTK、$\mu$P）对全连接网络推导，但实际应用在CNN和Transformer上。我们先快速过一遍它们的核心区别，这样后面讲``层宽$m$''``隐藏维度$d_{\text{model}}$''时学生才知道对应的是什么。
+
+\bigskip
+\textbf{（一）CNN（卷积神经网络）——图像的经典架构}
+
+\begin{center}
+\begin{tikzpicture}[scale=0.75, every node/.style={font=\small, align=center}]
+% Input
+\node[draw, fill=blue!10, minimum width=1.5cm, minimum height=2cm] (input) at (0,0) {输入图像\\$224\times224\times3$};
+% Conv blocks
+\node[draw, fill=orange!15, minimum width=1.5cm, minimum height=1.8cm] (conv1) at (3,0) {卷积层\\$3\times3$滤波器\\64个通道};
+\node[draw, fill=orange!15, minimum width=1.5cm, minimum height=1.4cm] (conv2) at (6,0) {卷积层\\$3\times3$滤波器\\128个通道};
+\node[draw, fill=orange!15, minimum width=1.5cm, minimum height=1cm] (conv3) at (9,0) {卷积层\\$3\times3$滤波器\\512个通道};
+% FC
+\node[draw, fill=green!15, minimum width=1.5cm, minimum height=0.8cm] (fc) at (12,0) {全连接层\\1000类};
+\draw[->,thick] (input) -- (conv1);
+\draw[->,thick] (conv1) -- node[above]{\tiny 池化} (conv2);
+\draw[->,thick] (conv2) -- node[above]{\tiny 池化} (conv3);
+\draw[->,thick] (conv3) -- node[above]{\tiny 展平} (fc);
+\end{tikzpicture}
+\end{center}
+
+\textbf{核心组件：}
+\begin{itemize}[leftmargin=*]
+\item \textbf{卷积层：}一组小滤波器（如$3\times 3$）在图像上``滑动''，每个滤波器检测一种局部模式（边缘、纹理、角点等）。\textbf{参数共享}：同一个滤波器在所有位置重复使用，所以参数量很少（$3\times 3\times C_{\text{in}}\times C_{\text{out}}$）。
+\item \textbf{池化层：}缩小空间分辨率（如$224\to 112\to 56\to\cdots$），同时增加通道数（$64\to 128\to 256\to 512$）。
+\item \textbf{感受野：}每个神经元只``看到''输入的一个局部区域。深层神经元的感受野更大——通过逐层堆叠实现``从局部到全局''。
+\end{itemize}
+
+\textbf{参数量在哪？} ResNet-50的25M参数中，$\sim$90\%在卷积层（滤波器权重），$\sim$10\%在最后的全连接层。``宽度''对应通道数$C$。
+
+\bigskip
+\textbf{（二）Transformer——语言和视觉的统一架构}
+
+\begin{center}
+\begin{tikzpicture}[scale=0.75, every node/.style={font=\small, align=center}]
+% Input
+\node[draw, fill=blue!10, minimum width=2.2cm, minimum height=1cm] (input) at (0,0) {输入token序列\\$s$个token};
+% Embedding
+\node[draw, fill=gray!15, minimum width=2.2cm, minimum height=1cm] (emb) at (3.5,0) {Embedding层\\token$\to d$维向量};
+% Transformer block
+\node[draw, fill=orange!15, minimum width=2.5cm, minimum height=2.5cm, rounded corners] (block) at (8,0) {
+\begin{tabular}{c}
+Transformer层\\（重复$L$次）\\[4pt]
+\hline\\[-6pt]
+Multi-Head Attention\\
+$+$ LayerNorm\\
+FFN（$d\to 4d\to d$）\\
+$+$ LayerNorm
+\end{tabular}};
+% Output
+\node[draw, fill=green!15, minimum width=2.2cm, minimum height=1cm] (out) at (12.5,0) {输出头\\（分类/生成）};
+\draw[->,thick] (input) -- (emb);
+\draw[->,thick] (emb) -- (block);
+\draw[->,thick] (block) -- (out);
+% Loop arrow
+\draw[->,thick,dashed] (block.south) -- ++(0,-0.8) -- ++(-1.5,0) -- ++(0,0.8) -- (block.south west);
+\node[font=\tiny] at (6.5,-1.2) {$\times L$层};
+\end{tikzpicture}
+\end{center}
+
+\textbf{每个Transformer层内部有两个核心子层：}
+
+\textbf{（a）Multi-Head Self-Attention（自注意力）}
+
+每个token``看''所有其他token，计算``该关注谁''：
+\[
+\text{Attention}(Q,K,V) = \text{softmax}\!\left(\frac{QK^\top}{\sqrt{d_{\text{head}}}}\right)V.
+\]
+\begin{itemize}[leftmargin=*]
+\item $Q = XW_Q$，$K = XW_K$，$V = XW_V$：三个线性投影，$W_Q, W_K, W_V \in \R^{d\times d}$。
+\item $QK^\top\in\R^{s\times s}$：注意力矩阵，第$(i,j)$元素表示token $i$``关注''token $j$的程度。
+\item softmax归一化后乘以$V$：加权汇聚信息。
+\item \textbf{Multi-head}：把$d$维切成$h$个$d_{\text{head}}=d/h$维的``头''，每个头学不同的注意力模式，最后拼起来通过$W_O\in\R^{d\times d}$投影回$d$维。
+\item 参数量：$W_Q, W_K, W_V, W_O$共$4d^2$。
+\end{itemize}
+
+\textbf{（b）Feed-Forward Network（FFN，逐位置前馈网络）}
+\[
+\text{FFN}(x) = \sigma(xW_1 + b_1)W_2 + b_2, \qquad W_1\in\R^{d\times 4d},\; W_2\in\R^{4d\times d}.
+\]
+\begin{itemize}[leftmargin=*]
+\item 先升维到$4d$（扩展），过激活函数（ReLU或GeLU），再降维回$d$。
+\item 对每个token\textbf{独立}应用（不像attention那样看其他token）。
+\item 参数量：$d\times 4d + 4d\times d = 8d^2$。
+\end{itemize}
+
+\textbf{每层总参数$\approx 4d^2 + 8d^2 = 12d^2$。}这就是前面$P\approx 12Ld^2$的来源。
+
+\bigskip
+\textbf{（三）关键区别对比}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{l|cc}
+\toprule
+& \textbf{CNN} & \textbf{Transformer} \\
+\midrule
+基本操作 & 局部卷积（$3\times 3$滑窗） & 全局注意力（每个token看所有token） \\
+参数共享 & 空间共享（同一滤波器全图用） & 无空间共享（但跨token共享权重） \\
+感受野 & 逐层扩大（局部$\to$全局） & 每层就是全局 \\
+``宽度'' & 通道数$C$ & 隐藏维度$d_{\text{model}}$ \\
+``深度'' & 卷积层数 & Transformer层数$L$ \\
+序列/空间建模 & 靠层叠加（间接） & 靠attention矩阵（直接） \\
+计算复杂度 & $O(s\cdot C^2\cdot k^2)$（$k$=核大小） & $O(s^2\cdot d)$（attention）$+ O(s\cdot d^2)$（FFN） \\
+主要瓶颈 & 大分辨率图像 & 长序列（$s^2$） \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keyinsight}[——为什么$\mu$P对Transformer特别重要]
+Transformer的``宽度''就是$d_{\text{model}}$。当我们把模型从$d=256$（代理模型）扩展到$d=8192$（大模型）时：
+\begin{itemize}[leftmargin=*]
+\item 参数量增长$\sim(8192/256)^2=1024$倍。
+\item 每层attention的$QK^\top$矩阵大小变了，softmax的``锐度''变了。
+\item FFN的中间维度从$4\times 256=1024$变到$4\times 8192=32768$。
+\item 如果用标准参数化，最优学习率会随$d$系统性漂移。$\mu$P通过修改输出缩放和注意力缩放（$1/\sqrt{d}\to 1/d$），让最优超参数\textbf{不随$d$变化}。
+\end{itemize}
+
+CNN的``宽度''是通道数$C$。理论上$\mu$P也适用（输出缩放$1/C$，隐藏层学习率$\eta/C$），但实践中CNN的$C$通常较小（$\le 2048$），finite-width效应更显著，$\mu$P的收益没有Transformer那么明显。
+\end{keyinsight}
+
+\subsection*{训练一次要多少钱？}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{llccc}
+\toprule
+领域 & 模型 & GPU & 训练时长 & 估算成本 \\
+\midrule
+\multirow{3}{*}{语言} & GPT-3 175B & $\sim$1K张V100 & $\sim$1个月 & \$4--12M \\
+& LLaMA-2-70B & 2K张A100 & $\sim$25天 & \$2--5M \\
+& LLaMA-3-405B & 16K张H100 & $\sim$54天 & \$30--60M \\
+\midrule
+\multirow{2}{*}{图像} & SD 1.5 & 256张A100 & $\sim$1个月 & $\sim$\$600K \\
+& FLUX 12B & 未公开 & 未公开 & 估$\sim$\$2--5M \\
+\midrule
+\multirow{2}{*}{视频} & Sora (v1) & 4K--10K张H100 & $\sim$1个月 & 估\$10--30M \\
+& Open-Sora 2.0 & 公开 & 公开 & \textbf{\$200K}（开源标杆） \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{关键观察：}
+\begin{itemize}[leftmargin=*]
+\item 视频生成的训练成本可比LLM（时空attention的计算量远超纯文本）。
+\item Open-Sora 2.0用\$200K达到了接近商业水平——说明\textbf{工程优化和超参数选择}的重要性。
+\item 如果最优学习率调错了2倍，整个训练可能要重来——再花几百万美元。
+\end{itemize}
+
+这就是$\mu$P的实际价值：在小代理模型（单卡几小时）上调好超参数，直接迁移到大模型，\textbf{省掉大模型上的网格搜索}。
+
+\subsection*{GPU显存里装了什么？}
+
+训练大模型时GPU显存是最紧张的资源。以一个$P$参数的模型为例（混合精度训练，Adam优化器）：
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{llc}
+\toprule
+组件 & 大小 & 典型占比 \\
+\midrule
+模型参数（FP16） & $2P$ 字节 & $\sim$8\% \\
+梯度（FP16） & $2P$ 字节 & $\sim$8\% \\
+Adam状态（FP32的$m_t$和$v_t$） & $2\times 4P = 8P$ 字节 & $\sim$33\% \\
+FP32主参数副本 & $4P$ 字节 & $\sim$17\% \\
+\textbf{激活值（用于反向传播）} & \textbf{与batch size成正比} & $\sim$34\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+总计：\textbf{每个参数$\approx$16--20字节}（不含激活值）。
+
+\textbf{代入具体数字：}7B参数模型，纯参数+优化器状态$\approx 7\times 10^9\times 16\text{B} = 112\text{GB}$。一张A100只有80GB显存——\textbf{单卡连7B的优化器状态都放不下}，必须用模型并行（如DeepSpeed ZeRO）把状态切分到多张卡上。
+
+\subsection*{Batch size为什么重要？}
+
+\textbf{激活值显存} $\propto$ batch size $\times$ 序列长度 $\times$ 隐藏维度 $\times$ 层数。
+
+粗略公式（Transformer，无activation checkpointing）：
+\[
+\text{激活值显存} \approx 2\times L\times B\times s\times d_{\text{model}} \times 10 \;\text{字节}
+\]
+（$B$=batch size，$s$=序列长度，系数10来自attention logits、中间层输出等）。
+
+\textbf{数值例子：}LLaMA-7B（$L=32, d=4096, s=2048$）：
+\begin{itemize}[leftmargin=*]
+\item $B=1$：激活值$\approx 2\times 32\times 1\times 2048\times 4096\times 10 \approx 5\text{GB}$。可以。
+\item $B=32$：$\approx 160\text{GB}$。单卡放不下！
+\item $B=1024$（大规模训练的典型值）：$\approx 5\text{TB}$。需要几十张卡。
+\end{itemize}
+
+\textbf{Activation checkpointing}（梯度检查点）可以用计算换显存：只保存每隔几层的激活值，其余在反向传播时重新计算。典型可节省60--70\%激活值显存，代价是$\sim$30\%额外计算。
+
+\begin{keyinsight}[——为什么batch size缩放是个大问题]
+实际大模型训练的batch size通常很大（$B=512$到$B=4096$甚至更大），因为：
+\begin{itemize}[leftmargin=*]
+\item 大batch利用GPU并行度，\textbf{吞吐量高}（tokens/秒）。
+\item 梯度方差$\propto 1/B$，大batch的梯度估计更准。
+\item 但大batch需要\textbf{调大学习率}（线性缩放法则$\eta\propto B$），否则收敛变慢。
+\end{itemize}
+
+问题是：\textbf{$\mu$P保证学习率跨宽度可迁移，但不直接处理batch size缩放。}从小batch调好的$\eta$到大batch不能直接用——需要额外的scaling law（如$\eta\propto\sqrt{B}$或$\eta\propto B$）。这是$\mu$P的一个重要局限，也是活跃的研究方向。
+\end{keyinsight}
+
+\subsection*{训练 vs 推理的成本对比}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lcc}
+\toprule
+& 训练 & 推理（生命周期内） \\
+\midrule
+计算量（FLOPs） & $\sim 6PD$（一次性） & 取决于用户量，可远超训练 \\
+典型成本占比 & 10--30\% & \textbf{70--90\%} \\
+谁付钱 & 模型开发者 & 最终通过API定价转嫁 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+其中$P$=参数量，$D$=训练token数。$6PD$的因子6来自：前向$2PD$（每个参数每个token做一次乘加$=2$次FLOP），反向$4PD$（约为前向的2倍）。
+
+\textbf{数值例子：}LLaMA-2-70B在2T tokens上训练：$6\times 70\times 10^9\times 2\times 10^{12} = 8.4\times 10^{23}$ FLOPs。H100峰值约$10^{15}$ FLOPS（FP16），理论最短时间$=8.4\times 10^{23}/10^{15}=8.4\times 10^8$秒$\approx 27$年（单卡）。用2000张卡：$\sim$5天（假设利用率50\%）。
+
+\textbf{推理方面：}GPT-4级别的模型，如果每天服务1亿次请求、每次生成500个token，每天的推理计算量就可能超过一次完整训练的计算量。所以\textbf{长期看推理成本远高于训练}——但训练成本是``不可重复的沉没成本''，超参数调错了就直接打水漂，这就是$\mu$P的价值。
+
+\begin{tcolorbox}[colback=yellow!10,colframe=yellow!60!black,title=\textbf{小结：为什么本周内容重要}]
+\begin{itemize}[leftmargin=*]
+\item 大模型训练\textbf{一次几百万美元}，超参数调错$=$重来$=$再花几百万。
+\item 显存限制使得batch size、模型宽度的选择相互耦合。
+\item $\mu$P提供了\textbf{跨宽度的超参数迁移}：在小模型上几小时调好，大模型直接用。
+\item 但batch size和深度方向的迁移\textbf{还不能}用$\mu$P解决——这是开放问题。
+\end{itemize}
+\end{tcolorbox}
+
+\newpage
+
+%=============================================================================
+\part{第一次课：Neural Tangent Kernel}
+%=============================================================================
+
+%=============================================================================
+\section{PyTorch默认做了什么？——标准参数化（SP）}
+%=============================================================================
+
+在讲NTK之前，我们先搞清楚一个基本问题：\textbf{当你写\texttt{nn.Linear(m\_in, m\_out)}时，PyTorch到底做了什么？}
+
+\subsection{Kaiming初始化}
+
+PyTorch的\texttt{nn.Linear}默认使用Kaiming uniform初始化（He et al., 2015）：
+\[
+W_{ij}\sim\text{Uniform}\!\left(-\frac{1}{\sqrt{m_{\text{in}}}},\; \frac{1}{\sqrt{m_{\text{in}}}}\right), \qquad \text{方差}=\frac{1}{3m_{\text{in}}}.
+\]
+
+\textbf{为什么除以$\sqrt{m_{\text{in}}}$？} 考虑一层线性变换$y=Wx$，$W\in\R^{m_{\text{out}}\times m_{\text{in}}}$。
+
+$y_i = \sum_{j=1}^{m_{\text{in}}} W_{ij}x_j$。如果$x_j$的方差为$\sigma_x^2$，$W_{ij}$的方差为$\sigma_W^2$，则
+\[
+\text{Var}[y_i] = m_{\text{in}}\cdot\sigma_W^2\cdot\sigma_x^2.
+\]
+要让$\text{Var}[y_i]=\text{Var}[x_j]$（信号方差逐层不变），需要$\sigma_W^2 = 1/m_{\text{in}}$。
+
+对ReLU激活，由于$\text{Var}[\text{ReLU}(z)]=\frac{1}{2}\text{Var}[z]$（正半边保留一半方差），Kaiming init修正为$\sigma_W^2=2/m_{\text{in}}$。
+
+\begin{handcalc}{0：验证PyTorch的初始化（课堂快速演示，3分钟）}
+\textbf{用Python验证：}
+\begin{verbatim}
+import torch.nn as nn
+layer = nn.Linear(1024, 512)  # m_in=1024, m_out=512
+print(layer.weight.std())     # 约 0.018 ≈ 1/sqrt(3*1024)
+
+# 验证输出方差
+x = torch.randn(100, 1024)    # 输入方差=1
+y = layer(x)
+print(y.std())                 # 约 1.0（信号幅度保持）
+\end{verbatim}
+\tcblower
+\textbf{要点：}Kaiming init保证\textbf{前向传播时信号不爆炸不消失}。但它对\textbf{训练过程中}各层的更新量级没有任何保证——不同层的梯度量级可能差很远。
+\end{handcalc}
+
+\subsection{SP的学习率：所有层一视同仁}
+
+PyTorch的\texttt{Adam(model.parameters(), lr=1e-3)}对所有参数使用\textbf{同一个学习率}。这意味着：
+
+\begin{itemize}[leftmargin=*]
+\item 嵌入层（$d_{\text{vocab}}\times d_{\text{model}}$）、隐藏层（$d\times d$）、输出层（$d\times d_{\text{vocab}}$）全用同一个$\eta$。
+\item 但各层的梯度量级不同！输出层直接接loss，梯度较大；深层的隐藏层梯度经过多次链式法则，可能偏小。
+\item 结果：有些层``学太快''（更新过大），有些层``学太慢''（更新过小）。
+\end{itemize}
+
+\subsection{SP的核心问题：最优$\eta^*$随宽度漂移}
+
+\begin{keyinsight}[——SP为什么不支持超参数迁移]
+在SP下，当宽度$m$变化时：
+\begin{itemize}[leftmargin=*]
+\item 初始化方差$\sigma_W^2=1/m$保证了前向信号稳定。
+\item 但梯度的量级和$m$的关系\textbf{没有被控制}。
+\item 例如：隐藏层梯度$\nabla_W L$中包含$1/\sqrt{m}$因子（来自前向缩放），但求和时有$m$项，两者部分抵消但不完全。
+\item 最终效果：最优学习率$\eta^*(m)$随$m$变化——通常$m$越大$\eta^*$越大（因为每步的有效更新变小了，需要更大的$\eta$补偿）。
+\end{itemize}
+
+\textbf{这就是$\mu$P要解决的问题。}$\mu$P不是改初始化（Kaiming已经够好），而是改\textbf{输出缩放}和\textbf{逐层学习率}，使得各层的更新量级在任何宽度$m$下都匹配。
+\end{keyinsight}
+
+\subsection{SP vs $\mu$P：预览}
+
+后面我们会看到，$\mu$P只需要在SP的基础上做\textbf{两处修改}：
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{l|cc}
+\toprule
+& SP（PyTorch默认/常规实践） & $\mu$P \\
+\midrule
+初始化 & fan-in型初始化（ReLU时常写作 $\sigma_W^2 \asymp 2/\mathrm{fan\_in}$） & 基本不变 \\
+输出层缩放 & $1/\sqrt{m}$ 量级 & $\mathbf{1/m}$ 量级 \\
+隐藏层学习率 & 统一 $\eta$ & $\mathbf{\eta/m}$ \\
+输出层学习率 & $\eta$ & $\eta$ \\
+宽度迁移性 & 最优$\eta^*$常随$m$漂移 & \textbf{最优$\eta^*$对$m$稳定} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+但要理解\textbf{为什么}这两处修改就够了，我们需要先理解NTK理论（第2--6节），然后从abc-参数化框架推导出$\mu$P（第二次课）。
+
+%=============================================================================
+\section{深度学习理论的三大困难——为什么需要NTK？}
+%=============================================================================
+
+上一节讲了实际问题（超参数不可迁移），但NTK的诞生不是为了解决这个工程问题。NTK回答的是一个更根本的\textbf{理论问题}：
+
+\begin{tcolorbox}[colback=blue!5,colframe=blue!50!black,title=\textbf{深度学习理论的核心追问}]
+\textbf{为什么梯度下降在神经网络上能work？}
+
+这个问题看起来简单，但经典优化理论和统计学给出的答案全是``不应该work''。
+\end{tcolorbox}
+
+\subsection{困难1：非凸性}
+
+神经网络的损失函数$L(\theta)$关于参数$\theta$是\textbf{高度非凸}的。即便是两层ReLU网络，损失曲面也充满鞍点和局部极小。
+
+\textbf{经典优化理论说：}梯度下降只保证收敛到\textbf{驻点}（梯度为零的点），不保证收敛到全局最小。非凸问题一般是NP-hard的。
+
+\textbf{但实际上：}SGD几乎总能把训练误差降到接近零，甚至在没有正则化的情况下。
+
+\subsection{困难2：过参数化}
+
+现代网络的参数量$P$远超训练样本量$n$（$P\gg n$）。GPT-3有175B参数，但训练数据即使有300B tokens也只有有限的独立信息。
+
+\textbf{经典统计学说：}$P\gg n$应该导致严重\textbf{过拟合}——模型记住了训练数据但在测试集上表现很差。偏差-方差权衡预测存在一个最优的$P$，过大会变差。
+
+\textbf{但实际上：}更大的模型不仅训练误差更低，\textbf{测试误差也更低}（``double descent''现象）。过参数化似乎是有益的。
+
+\subsection{困难3：高维性}
+
+参数空间的维度$P$可达$10^{12}$。在如此高维的空间里分析梯度流的全局行为，传统工具力不从心。
+
+\subsection{NTK的突破：绕过所有三个困难}
+
+Jacot, Gabriel \& Hongler (2018)的NTK理论给出了一个\textbf{一举三得}的答案：
+
+\textbf{核心思路：}不在$P$维参数空间里分析，而是\textbf{直接在$n$维函数空间里写出训练动力学}。当宽度$m\to\infty$时：
+
+\begin{enumerate}[leftmargin=*]
+\item \textbf{解决非凸性：}函数空间的动力学$\dot\bu=-\bTheta^*(\bu-\by)$是\textbf{线性ODE}。线性系统没有局部极小，全局收敛到$\bu=\by$。\textbf{参数空间的非凸性在函数空间中``消失''了。}
+
+\item \textbf{解决过参数化：}$m\to\infty$意味着$P\to\infty$，这是``极端''过参数化。但infinite-width网络等价于NTK核回归——一个经典的、理论完善的学习算法。过参数化不但不有害，反而\textbf{使问题可解}（$\bTheta^*$正定保证了唯一解的存在）。
+
+\item \textbf{绕过高维性：}虽然参数空间是$P$维的，但训练动力学可以完全用$n\times n$的NTK矩阵$\bTheta^*$描述。从$P\sim 10^{12}$维降到$n\sim 10^4$维——降维了$10^8$倍。
+\end{enumerate}
+
+\begin{remark}{重要的细微处：深度$L$的角色}{depth-caveat}
+上述论证对\textbf{任意有限深度$L$}成立——只要宽度$m\to\infty$先取极限，$L$固定。函数空间的动力学永远是线性ODE，形式上永远``凸''。
+
+但\textbf{深度越大，$\bTheta^*$的条件越差}：
+
+对无skip connection的ReLU全连接网络，NTK矩阵的条件数
+\[
+\kappa(L) = \frac{\lambda_{\max}(\bTheta^*)}{\lambda_{\min}(\bTheta^*)} \;\xrightarrow{L\to\infty}\; \infty.
+\]
+
+\textbf{为什么？} 深层网络的NNGP核相关系数$\rho^{(l)}$逐层递增趋向1——所有输入在经过很多层非线性后变得``越来越像''。当$\rho^{(l)}\to 1$时，NTK矩阵趋向\textbf{秩1}（只有一个大特征值，其余趋于零），网络失去了区分不同输入的能力。
+
+\textbf{后果：}收敛保证$L(t)\le L(0)e^{-\eta\lambda_{\min}t}$形式上成立，但$\lambda_{\min}\to 0$意味着收敛\textbf{无限慢}——``凸但没用''。
+
+\begin{center}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{ccc}
+\toprule
+深度$L$ & $\kappa(\bTheta^*)$（典型值） & 收敛速度 \\
+\midrule
+2 & $\sim 4$ & 快 \\
+10 & $\sim 100$ & 慢 \\
+50 & $\sim 10^6$ & 极慢 \\
+$\to\infty$ & $\to\infty$ & 不收敛 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{ResNet的skip connection}部分缓解了这个退化：skip connection相当于在$\rho^{(l)}$的递推中加了一个``拉回$\rho<1$''的项，防止核坍缩到秩1。这是ResNet优于plain network的\textbf{NTK层面的解释}。
+
+\textbf{宽度$m$和深度$L$同时$\to\infty$呢？} NTK理论的标准证明要求$m\to\infty$时$L$固定。如果$m,L$同时增长（如实际的GPT-3：$L=96, d=12288$），需要更精细的分析——这是Tensor Programs VI (Yang et al., 2024)的内容，也是$\mu$P在深度方向迁移困难的理论原因。
+\end{remark}
+
+\begin{keyinsight}[——NTK的理论地位]
+NTK理论第一次给出了\textbf{在严格数学意义上}，神经网络梯度下降全局收敛的证明。它不是一个近似论证或启发式直觉，而是一个完整的\textbf{定理}：在$m$足够大的条件下，梯度下降以指数速率收敛到零训练误差。
+
+这是深度学习理论的里程碑。在NTK之前，``为什么GD能work''这个问题基本是open的。NTK给出了第一个完整的答案——虽然这个答案有代价（丢失feature learning），但它建立了整个后续理论的\textbf{概念框架}：核冻结vs核漂移、lazy vs rich training、线性化vs非线性动力学。$\mu$P理论正是在这个框架上发展起来的。
+\end{keyinsight}
+
+\textbf{本节后续路线：}先用最小的例子手算NTK（第3节），然后给出一般定义和两层网络的完整推导（第4节），再陈述Jacot三大定理（第5节），最后讨论NTK的代价——丢失feature learning（第8节）。这为第二次课的$\mu$P做好铺垫。
+
+%=============================================================================
+\section{热身：一个最小的例子}
+%=============================================================================
+
+在进入NTK理论之前，我们先手算一个最小的网络。目标：让每个概念都有\textbf{具体的数字}支撑。
+
+\begin{handcalc}{1：单神经元Sigmoid的NTK（课堂演示，约20分钟）}
+
+\textbf{设置。} 最简单的``网络''：单个sigmoid神经元，标量输入$d=1$。
+\[
+f(x; a, w) = a\,\sigma(wx), \qquad \sigma(z) = \frac{1}{1+e^{-z}}.
+\]
+参数$\theta = (a, w) \in \R^2$，初始化$a_0=1, w_0=0$。
+
+训练数据两个点：$(x_1, y_1)=(1, 1)$和$(x_2, y_2)=(-1, 0)$。
+
+MSE损失：$L = \frac{1}{2}[(f(x_1)-y_1)^2 + (f(x_2)-y_2)^2]$。
+
+\tcblower
+
+\textbf{第1步：计算初始输出。}
+
+先算sigmoid在0处的值：
+\[
+\sigma(0) = \frac{1}{1+e^0} = \frac{1}{2} = 0.5.
+\]
+因此
+\[
+f(x_1;\theta_0) = a_0\cdot\sigma(w_0\cdot x_1) = 1\times\sigma(0\times 1) = 1\times 0.5 = 0.5,
+\]
+\[
+f(x_2;\theta_0) = a_0\cdot\sigma(w_0\cdot x_2) = 1\times\sigma(0\times(-1)) = 1\times 0.5 = 0.5.
+\]
+
+输出向量：$\bu(0) = (f(x_1), f(x_2))^\top = (0.5, 0.5)^\top$。
+
+目标向量：$\by = (y_1, y_2)^\top = (1, 0)^\top$。
+
+初始残差：$\br(0) = \bu(0) - \by = (0.5-1,\; 0.5-0)^\top = (-0.5,\; 0.5)^\top$。
+
+初始损失：$L(0) = \frac{1}{2}((-0.5)^2 + 0.5^2) = \frac{1}{2}\times 0.5 = 0.25$。
+
+\textbf{（板书：在坐标轴上画出$x$轴为输入，$y$轴为输出，标出$(1,0.5)$和$(-1,0.5)$两个当前输出点，用虚线标出目标$(1,1)$和$(-1,0)$。）}
+
+\bigskip
+\textbf{第2步：计算所有偏导数。}
+
+我们需要$f$对每个参数的偏导。先准备sigmoid的导数公式：
+\[
+\sigma'(z) = \sigma(z)(1-\sigma(z)).
+\]
+在$z=0$处：$\sigma'(0) = 0.5\times(1-0.5) = 0.5\times 0.5 = 0.25$。
+
+\medskip
+\textit{对参数$a$的偏导：}
+
+$f(x;a,w) = a\sigma(wx)$，所以$\frac{\partial f}{\partial a} = \sigma(wx)$。
+
+在$x=x_1=1$处：$\frac{\partial f}{\partial a}\big|_{x_1} = \sigma(w_0\cdot 1) = \sigma(0) = 0.5$。
+
+在$x=x_2=-1$处：$\frac{\partial f}{\partial a}\big|_{x_2} = \sigma(w_0\cdot(-1)) = \sigma(0) = 0.5$。
+
+\medskip
+\textit{对参数$w$的偏导：}
+
+$\frac{\partial f}{\partial w} = a\cdot\sigma'(wx)\cdot x$（链式法则）。
+
+在$x=x_1=1$处：$\frac{\partial f}{\partial w}\big|_{x_1} = 1\times 0.25\times 1 = 0.25$。
+
+在$x=x_2=-1$处：$\frac{\partial f}{\partial w}\big|_{x_2} = 1\times 0.25\times(-1) = -0.25$。
+
+\textbf{（提问学生：为什么$\partial f/\partial w$在两个点上符号相反？——因为$x_1=1$而$x_2=-1$。增大$w$会让$f(x_1)$变大但让$f(x_2)$变小。这正是$w$控制``形状''的体现。）}
+
+\bigskip
+\textbf{第3步：写出Jacobian矩阵。}
+
+Jacobian矩阵$\bJ\in\R^{n\times P} = \R^{2\times 2}$，第$i$行是$\nabla_\theta f(x_i)^\top$：
+\[
+\bJ = \begin{pmatrix}
+\frac{\partial f}{\partial a}\big|_{x_1} & \frac{\partial f}{\partial w}\big|_{x_1} \\[6pt]
+\frac{\partial f}{\partial a}\big|_{x_2} & \frac{\partial f}{\partial w}\big|_{x_2}
+\end{pmatrix}
+= \begin{pmatrix}
+0.5 & 0.25 \\[4pt]
+0.5 & -0.25
+\end{pmatrix}.
+\]
+
+\textbf{观察：}第一列（对$a$的梯度）两行相同——因为$a$对两个输出的影响方式相同（都是乘以$\sigma$，而$\sigma(0)$对称）。第二列（对$w$的梯度）两行符号相反——$w$对两个输出的影响是\textbf{反向}的。
+
+\bigskip
+\textbf{第4步：组装NTK矩阵。}
+
+NTK矩阵$\bTheta = \bJ\bJ^\top \in \R^{2\times 2}$。逐元素计算：
+
+$\Theta_{11}$（$x_1$和$x_1$之间）：
+\[
+\Theta_{11} = \nabla_\theta f(x_1)^\top\nabla_\theta f(x_1) = \left(\frac{\partial f}{\partial a}\bigg|_{x_1}\right)^2 + \left(\frac{\partial f}{\partial w}\bigg|_{x_1}\right)^2 = 0.5^2 + 0.25^2 = 0.25 + 0.0625 = 0.3125.
+\]
+
+$\Theta_{12}$（$x_1$和$x_2$之间）：
+\[
+\Theta_{12} = \nabla_\theta f(x_1)^\top\nabla_\theta f(x_2) = 0.5\times 0.5 + 0.25\times(-0.25) = 0.25 - 0.0625 = 0.1875.
+\]
+
+$\Theta_{22}$（$x_2$和$x_2$之间）：
+\[
+\Theta_{22} = 0.5^2 + (-0.25)^2 = 0.25 + 0.0625 = 0.3125.
+\]
+
+合起来：
+\[
+\boxed{\bTheta = \begin{pmatrix} 0.3125 & 0.1875 \\ 0.1875 & 0.3125 \end{pmatrix} = \frac{1}{16}\begin{pmatrix} 5 & 3 \\ 3 & 5 \end{pmatrix}.}
+\]
+
+\textbf{（提问：$\bTheta$是对称正定的。为什么？——因为$\bTheta=\bJ\bJ^\top$，而$\bJ$是$2\times 2$且行列式$=0.5\times(-0.25)-0.5\times 0.25 = -0.25\neq 0$，所以$\bJ$满秩，$\bTheta$正定。）}
+
+\textbf{物理意义：}
+\begin{itemize}[leftmargin=*]
+\item $\Theta_{11}=\Theta_{22}=0.3125$：两个训练点的``自核值''相等（因为网络对$x_1,x_2$的梯度范数相同）。
+\item $\Theta_{12}=0.1875 > 0$：训练$x_1$时，$x_2$的输出也会\textbf{同方向}变化（正耦合）。
+\end{itemize}
+
+\bigskip
+\textbf{第5步：特征分解。}
+
+对$2\times 2$对称矩阵$\begin{pmatrix}\alpha&\beta\\\beta&\alpha\end{pmatrix}$，特征值为$\alpha\pm\beta$，特征向量为$(1,\pm 1)/\sqrt{2}$。
+
+代入$\alpha=5/16, \beta=3/16$：
+\begin{align}
+\lambda_1 &= \frac{5+3}{16} = \frac{8}{16} = \frac{1}{2} = 0.5, \qquad \bv_1 = \frac{1}{\sqrt{2}}\begin{pmatrix}1\\1\end{pmatrix}, \\[6pt]
+\lambda_2 &= \frac{5-3}{16} = \frac{2}{16} = \frac{1}{8} = 0.125, \qquad \bv_2 = \frac{1}{\sqrt{2}}\begin{pmatrix}1\\-1\end{pmatrix}.
+\end{align}
+
+条件数：$\kappa = \lambda_1/\lambda_2 = 0.5/0.125 = 4$。
+
+验证：$\bTheta = 0.5\cdot\bv_1\bv_1^\top + 0.125\cdot\bv_2\bv_2^\top = 0.5\cdot\frac{1}{2}\begin{pmatrix}1&1\\1&1\end{pmatrix} + 0.125\cdot\frac{1}{2}\begin{pmatrix}1&-1\\-1&1\end{pmatrix} = \begin{pmatrix}0.3125&0.1875\\0.1875&0.3125\end{pmatrix}$。$\checkmark$
+
+\textbf{（板书：画出$\R^2$平面，标出$\bv_1$和$\bv_2$方向，在$\bv_1$方向画粗箭头标``快（$\lambda_1=0.5$）''，在$\bv_2$方向画细箭头标``慢（$\lambda_2=0.125$）''。）}
+
+\bigskip
+\textbf{第6步：预测训练动力学。}
+
+如果NTK冻结（$m\to\infty$的结论，这里$m=1$只是近似），则
+\[
+\br(t) = e^{-\bTheta t}\br(0).
+\]
+
+将$\br(0)=(-0.5, 0.5)^\top$分解到特征基：
+\begin{align}
+c_1 &= \bv_1^\top\br(0) = \frac{1}{\sqrt{2}}(1\times(-0.5) + 1\times 0.5) = 0, \\
+c_2 &= \bv_2^\top\br(0) = \frac{1}{\sqrt{2}}(1\times(-0.5) + (-1)\times 0.5) = \frac{-1}{\sqrt{2}} \approx -0.707.
+\end{align}
+
+所以$\br(0) = 0\cdot\bv_1 + \frac{-1}{\sqrt{2}}\bv_2$。\textbf{残差全在慢方向$\bv_2$上！}
+
+动力学：
+\[
+\br(t) = c_1 e^{-\lambda_1 t}\bv_1 + c_2 e^{-\lambda_2 t}\bv_2 = \frac{-1}{\sqrt{2}}e^{-t/8}\bv_2 = e^{-t/8}\begin{pmatrix}-0.5\\0.5\end{pmatrix}.
+\]
+
+回到原始坐标：$\bu(t) = \by + \br(t) = \begin{pmatrix}1\\0\end{pmatrix} + e^{-t/8}\begin{pmatrix}-0.5\\0.5\end{pmatrix} = \begin{pmatrix}1-0.5e^{-t/8}\\0.5e^{-t/8}\end{pmatrix}$。
+
+损失：$L(t) = \frac{1}{2}\|\br(t)\|^2 = \frac{1}{2}\times 2\times 0.25\times e^{-t/4} = 0.25\,e^{-t/4}$。
+
+收敛时间常数：$\tau = 4$（损失半衰期$t_{1/2}=4\ln 2\approx 2.77$）。
+
+\textbf{数值表（板书）：}
+\begin{center}
+\begin{tabular}{c|ccccc}
+\toprule
+$t$ & 0 & 4 & 8 & 16 & 32 \\
+\midrule
+$L(t)$ & 0.250 & 0.092 & 0.034 & 0.005 & $10^{-4}$ \\
+$f(x_1)$ & 0.500 & 0.816 & 0.932 & 0.987 & 0.999 \\
+$f(x_2)$ & 0.500 & 0.184 & 0.068 & 0.013 & 0.001 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\bigskip
+\textbf{第7步：几何解读（最重要！停下来讨论2分钟）}
+
+$\bv_1=(1,1)/\sqrt{2}$方向的含义：两个输出\textbf{同增同减}。哪个参数能做到？——调$a$！增大$a$同时放大$f(x_1)$和$f(x_2)$。NTK告诉我们这个方向``快''（$\lambda_1=0.5$）。
+
+$\bv_2=(1,-1)/\sqrt{2}$方向的含义：两个输出\textbf{一增一减}。哪个参数能做到？——调$w$！增大$w$让sigmoid变陡，$f(1)\uparrow$但$f(-1)\downarrow$。NTK告诉我们这个方向``慢''（$\lambda_2=0.125$），因为sigmoid在$w=0$附近变化很平缓（$\sigma'(0)=0.25$只有最大值的一半）。
+
+我们的学习任务需要$f(x_1)$增大同时$f(x_2)$减小——恰好\textbf{全在慢方向上}。如果任务换成$f(x_1)$和$f(x_2)$都增大，就全在快方向上了——这正是下面练习1的内容。
+\end{handcalc}
+
+\begin{classexercise}{1：换一组标签（5分钟）}
+用同一个网络和初始化，但把标签改为$y_1=1, y_2=1$。
+\begin{enumerate}[label=(\alph*)]
+\item NTK矩阵$\bTheta$是否变化？
+\item 新的残差$\br(0) = ?$
+\item $\br(0)$在哪个特征方向上？
+\item 收敛时间常数$\tau = ?$，和手算1比快了多少倍？
+\end{enumerate}
+
+\medskip
+\textbf{详细答案：}
+(a) 不变。NTK$=\bJ\bJ^\top$只依赖输入$x_i$和当前参数$\theta$，不依赖标签$y_i$。
+(b) $\br(0) = (0.5-1, 0.5-1)^\top = (-0.5, -0.5)^\top$。
+(c) $c_1 = \bv_1^\top\br(0) = \frac{1}{\sqrt{2}}(-0.5-0.5) = -1/\sqrt{2}$，$c_2 = \bv_2^\top\br(0) = \frac{1}{\sqrt{2}}(-0.5+0.5)=0$。全在\textbf{快方向$\bv_1$}上！
+(d) $\tau = 1/\lambda_1 \times 4 = 2$（损失$L(t)=0.25e^{-t}$），比手算1快\textbf{4倍}（$\kappa=4$）。
+
+\textbf{结论：同一个NTK，不同任务难度可以差$\kappa$倍。NTK的条件数直接控制了``最难学的模式比最易学的模式慢多少''。}
+\end{classexercise}
+
+%=============================================================================
+\section{NTK的一般定义}
+%=============================================================================
+
+\begin{definition}{Neural Tangent Kernel}{ntk-def}
+对参数化函数$f:\R^d\times\R^P\to\R$，在参数$\theta$处的NTK定义为
+\[
+\Theta_\theta(x,x') = \langle \nabla_\theta f(x;\theta),\, \nabla_\theta f(x';\theta)\rangle_{\R^P} = \sum_{p=1}^{P} \frac{\partial f(x)}{\partial \theta_p}\frac{\partial f(x')}{\partial \theta_p}.
+\]
+NTK矩阵$\bTheta\in\R^{n\times n}$定义为$\Theta_{ij}=\Theta(x_i,x_j)$，即$\bTheta=\bJ\bJ^\top$。
+\end{definition}
+
+\begin{keyinsight}
+NTK$\Theta(x,x')$度量的是：``想让$f(x)$变大''和``想让$f(x')$变大''这两个目标在参数空间里\textbf{有多对齐}。
+
+$\Theta(x,x')$大$\Rightarrow$训练$x$时$x'$也会``搭便车''变化。
+
+$\Theta(x,x')=0$ $\Rightarrow$两者完全解耦。
+
+$\Theta(x,x')<0$ $\Rightarrow$训练$x$时$x'$会\textbf{反方向}变化（互相干扰）。
+\end{keyinsight}
+
+\subsection{从参数空间到函数空间：Jacobian矩阵}
+
+我们的目标是：不追踪$P$个参数的运动，而是\textbf{直接}写出$n$个训练点上输出的演化方程。连接这两个空间的桥梁就是Jacobian矩阵。
+
+\textbf{定义Jacobian矩阵。} 网络$f(x;\theta)$对\textbf{所有参数}$\theta\in\R^P$的梯度是一个$P$维向量$\nabla_\theta f(x;\theta)$。对$n$个训练点分别求梯度，排成矩阵的行：
+\[
+\bJ(t) = \begin{pmatrix}
+\nabla_\theta f(x_1;\theta(t))^\top \\
+\nabla_\theta f(x_2;\theta(t))^\top \\
+\vdots \\
+\nabla_\theta f(x_n;\theta(t))^\top
+\end{pmatrix} \in \R^{n\times P}.
+\]
+
+写开来，第$(i,p)$元素就是$J_{ip} = \frac{\partial f(x_i)}{\partial\theta_p}$。
+
+\textbf{（回忆手算1：}$n=2$个训练点，$P=2$个参数$(a,w)$，Jacobian就是$2\times 2$矩阵$\bJ=\begin{pmatrix}0.5&0.25\\0.5&-0.25\end{pmatrix}$。\textbf{）}
+
+\medskip
+\textbf{Jacobian的两个方向。}
+
+$\bJ$把参数空间的运动映射到函数空间：如果参数变化$\Delta\theta\in\R^P$，输出的变化为
+\[
+\Delta\bu \approx \bJ\,\Delta\theta \in\R^n.
+\]
+（一阶近似。$\bJ$的每一行告诉你``$\theta$动一下，$f(x_i)$变多少''。）
+
+$\bJ^\top$把函数空间的``信号''映射回参数空间：如果有一个``每个训练点该走多少''的向量$\bv\in\R^n$，对参数的影响为
+\[
+\bJ^\top\bv = \sum_{i=1}^n v_i\,\nabla_\theta f(x_i) \in\R^P.
+\]
+（$\bJ^\top$的每一列是一个训练点对参数的``拉力''。）
+
+\subsection{函数空间的精确演化方程}
+
+\begin{theorem}{训练动力学方程（精确，无近似）}{dynamics}
+对MSE损失$L(\theta)=\frac{1}{2}\|\bu(\theta)-\by\|^2$，连续时间梯度流下：
+\[
+\boxed{\dot\bu(t) = -\bTheta(t)\,(\bu(t)-\by), \qquad \bTheta(t)=\bJ(t)\bJ(t)^\top.}
+\]
+\end{theorem}
+
+\textbf{推导（逐步展开）：}
+
+\textbf{第1步：参数空间的梯度流。} 梯度下降$\dot\theta = -\nabla_\theta L$。对MSE损失：
+\[
+\frac{\partial L}{\partial\theta_p} = \sum_{i=1}^n \underbrace{(f(x_i;\theta)-y_i)}_{\text{第$i$个残差}} \cdot \underbrace{\frac{\partial f(x_i)}{\partial\theta_p}}_{\text{$\bJ$的第$(i,p)$元素}}.
+\]
+写成矩阵形式（$\bJ$的第$p$列是$(\partial f(x_1)/\partial\theta_p,\dots,\partial f(x_n)/\partial\theta_p)^\top$）：
+\[
+\nabla_\theta L = \bJ(t)^\top\,\underbrace{(\bu(t)-\by)}_{\text{残差向量}\;\br(t)} \in\R^P.
+\]
+所以参数的运动是：
+\begin{equation}
+\dot\theta(t) = -\nabla_\theta L = -\bJ(t)^\top\,(\bu(t)-\by). \label{eq:param-flow}
+\end{equation}
+
+\textbf{（直觉：$\bJ^\top$把``每个训练点的残差''翻译成``每个参数该怎么调''。残差大的点贡献更多``拉力''。）}
+
+\medskip
+\textbf{第2步：从参数变化推出输出变化。} $\bu(t)$是$\theta(t)$的函数，链式法则：
+\[
+\dot u_i(t) = \frac{d}{dt}f(x_i;\theta(t)) = \sum_{p=1}^P \frac{\partial f(x_i)}{\partial\theta_p}\cdot\dot\theta_p(t) = \nabla_\theta f(x_i)^\top\dot\theta(t).
+\]
+$n$个点排成向量：
+\begin{equation}
+\dot\bu(t) = \bJ(t)\,\dot\theta(t). \label{eq:func-flow}
+\end{equation}
+
+\textbf{（直觉：$\bJ$把``参数的运动''翻译成``输出的变化''。和第1步的方向相反：$\bJ^\top$从函数空间到参数空间，$\bJ$从参数空间到函数空间。）}
+
+\medskip
+\textbf{第3步：合并。} 把\eqref{eq:param-flow}代入\eqref{eq:func-flow}：
+\begin{align}
+\dot\bu(t) &= \bJ(t)\,\dot\theta(t) = \bJ(t)\big[-\bJ(t)^\top(\bu(t)-\by)\big] \\
+&= -\underbrace{\bJ(t)\bJ(t)^\top}_{=\;\bTheta(t)\;\in\R^{n\times n}}\,(\bu(t)-\by).
+\end{align}
+
+得到$\dot\bu(t) = -\bTheta(t)(\bu(t)-\by)$。$\square$
+
+\begin{keyinsight}[——为什么NTK自然出现]
+$\bJ^\top$（函数$\to$参数）和$\bJ$（参数$\to$函数）的\textbf{复合}$\bJ\bJ^\top$就是NTK矩阵。它描述的是：``训练点$x_i$的残差，经过参数空间绕一圈后，对训练点$x_j$的输出产生多大影响''。
+
+这就是为什么$\Theta(x_i,x_j)=\nabla_\theta f(x_i)^\top\nabla_\theta f(x_j)$——两个点的梯度越对齐，训练$x_i$时$x_j$``搭便车''的效应越强。
+
+注意：这个推导\textbf{对任意网络结构、任意宽度都精确成立}，没做任何近似。唯一的困难是$\bTheta(t)$本身也在变化（因为$\bJ(t)$依赖于$\theta(t)$），使得这是一个\textbf{非线性}系统。NTK理论的核心贡献就是证明在$m\to\infty$下$\bTheta(t)\approx\bTheta^*=$常数，从而化为线性ODE。
+\end{keyinsight}
+
+\begin{teachingtip}
+让学生用手算1的数字验证。$\dot\bu(0) = -\bTheta\cdot\br(0)$：
+\[
+-\frac{1}{16}\begin{pmatrix}5&3\\3&5\end{pmatrix}\begin{pmatrix}-0.5\\0.5\end{pmatrix} = -\frac{1}{16}\begin{pmatrix}-2.5+1.5\\-1.5+2.5\end{pmatrix} = -\frac{1}{16}\begin{pmatrix}-1\\1\end{pmatrix} = \begin{pmatrix}0.0625\\-0.0625\end{pmatrix}.
+\]
+$f(x_1)$在增大（$+0.0625$/单位时间），$f(x_2)$在减小（$-0.0625$/单位时间）。方向对了，但速度不快——因为全在慢方向上。
+\end{teachingtip}
+
+%=============================================================================
+\section{两层网络的NTK：完整推导}
+%=============================================================================
+
+现在从手算1（单个神经元）推广到$m$个神经元的两层网络，完整推导NTK的解析表达式。
+
+\subsection{设置与符号}
+
+NTK参数化下的两层网络，输入$x\in\R^d$：
+\[
+f(x;\theta) = \frac{1}{\sqrt{m}}\sum_{j=1}^m a_j\,\sigma(\bw_j^\top x).
+\]
+参数$\theta = \{a_j\in\R,\; \bw_j\in\R^d\}_{j=1}^m$，总参数量$P = m(d+1)$。
+
+初始化：$a_j\sim\cN(0,1)$独立，$\bw_j\sim\cN(0,\bI_d)$独立。
+
+\subsection{对每个参数求梯度}
+
+\begin{handcalc}{2：两层网络的NTK推导（课堂演示，约25分钟）}
+
+\textbf{Step 2a：对输出层参数$a_j$求偏导。}
+
+\[
+\frac{\partial f(x)}{\partial a_j} = \frac{1}{\sqrt{m}}\,\sigma(\bw_j^\top x).
+\]
+
+这是$x$经过第$j$个神经元的\textbf{隐藏层输出}乘以$1/\sqrt{m}$。记$h_j(x) = \sigma(\bw_j^\top x)$，则$\frac{\partial f}{\partial a_j} = \frac{h_j(x)}{\sqrt{m}}$。
+
+\textbf{量级：}$h_j = O(1)$（$\sigma$有界或$\sigma=\text{ReLU}$时$h_j = O(\|x\|)$），所以$\frac{\partial f}{\partial a_j} = O(1/\sqrt{m})$。
+
+\bigskip
+\textbf{Step 2b：对隐藏层参数$\bw_j$求偏导。}
+
+$\bw_j$出现在$\sigma(\bw_j^\top x)$中，由链式法则：
+\[
+\frac{\partial f(x)}{\partial \bw_j} = \frac{1}{\sqrt{m}}\,a_j\,\sigma'(\bw_j^\top x)\,x \;\in\R^d.
+\]
+
+注意这是一个$d$维向量（$\bw_j$有$d$个分量）。
+
+\textbf{量级：}$a_j=O(1)$，$\sigma'=O(1)$，$x=O(1)$，所以$\frac{\partial f}{\partial \bw_j} = O(1/\sqrt{m})$。
+
+\bigskip
+\textbf{Step 2c：组装NTK。}
+
+\[
+\Theta(x,x') = \sum_{p=1}^P \frac{\partial f(x)}{\partial\theta_p}\frac{\partial f(x')}{\partial\theta_p} = \sum_{j=1}^m \frac{\partial f(x)}{\partial a_j}\frac{\partial f(x')}{\partial a_j} + \sum_{j=1}^m \left\langle\frac{\partial f(x)}{\partial\bw_j}, \frac{\partial f(x')}{\partial\bw_j}\right\rangle.
+\]
+
+\textit{输出层贡献$K_a$：}
+\begin{align}
+K_a(x,x') &= \sum_{j=1}^m \frac{h_j(x)}{\sqrt{m}}\cdot\frac{h_j(x')}{\sqrt{m}} = \frac{1}{m}\sum_{j=1}^m h_j(x)\,h_j(x') \\
+&= \frac{1}{m}\sum_{j=1}^m \sigma(\bw_j^\top x)\,\sigma(\bw_j^\top x').
+\end{align}
+
+\textit{隐藏层贡献$K_w$：}
+\begin{align}
+K_w(x,x') &= \sum_{j=1}^m \left\langle \frac{a_j\sigma'(\bw_j^\top x)\,x}{\sqrt{m}},\; \frac{a_j\sigma'(\bw_j^\top x')\,x'}{\sqrt{m}} \right\rangle \\
+&= \frac{1}{m}\sum_{j=1}^m a_j^2\,\sigma'(\bw_j^\top x)\,\sigma'(\bw_j^\top x')\,(x^\top x').
+\end{align}
+
+合起来：
+\begin{equation}
+\boxed{\Theta(x,x') = \underbrace{\frac{1}{m}\sum_{j=1}^m \sigma(\bw_j^\top x)\,\sigma(\bw_j^\top x')}_{K_a(x,x')} + \underbrace{\frac{1}{m}\sum_{j=1}^m a_j^2\,\sigma'(\bw_j^\top x)\,\sigma'(\bw_j^\top x')\,(x^\top x')}_{K_w(x,x')}.}
+\end{equation}
+
+\bigskip
+\textbf{Step 2d：$m\to\infty$的极限。}
+
+$K_a$：$\bw_j$是i.i.d.的，$h_j(x)h_j(x')$是i.i.d.随机变量。由强大数定律：
+\[
+K_a(x,x') \xrightarrow{m\to\infty} \E_{\bw\sim\cN(0,\bI_d)}\big[\sigma(\bw^\top x)\,\sigma(\bw^\top x')\big] \triangleq \Sigma^{(1)}(x,x').
+\]
+
+$K_w$：类似地，$a_j^2\sigma'(\bw_j^\top x)\sigma'(\bw_j^\top x')$是i.i.d.的（$a_j$和$\bw_j$独立），且$\E[a_j^2]=1$：
+\[
+K_w(x,x') \xrightarrow{m\to\infty} \underbrace{\E[a^2]}_{=1}\cdot\E_{\bw}\big[\sigma'(\bw^\top x)\,\sigma'(\bw^\top x')\big]\cdot(x^\top x') \triangleq \dot\Sigma^{(1)}(x,x')\cdot\Sigma^{(0)}(x,x').
+\]
+
+其中$\Sigma^{(0)}(x,x')=x^\top x'$就是输入的内积。
+
+\textbf{极限NTK：}
+\begin{equation}
+\boxed{\Theta^*(x,x') = \Sigma^{(1)}(x,x') + \dot\Sigma^{(1)}(x,x')\cdot\Sigma^{(0)}(x,x').}
+\end{equation}
+
+这是一个\textbf{确定性}的核函数——不再依赖随机初始化，只依赖输入$(x,x')$和激活函数$\sigma$。
+
+\bigskip
+\textbf{Step 2e：收敛速率。}
+
+由CLT，$K_a$和$K_w$的涨落都是$O(1/\sqrt{m})$：
+\[
+|\Theta(x,x') - \Theta^*(x,x')| = O_P(1/\sqrt{m}).
+\]
+这就是Jacot定理1的内容。
+\end{handcalc}
+
+\begin{handcalc}{3：$m=4$个ReLU神经元的完整NTK计算（课堂核心，约20分钟）}
+
+\textbf{设置。} $d=1$（标量输入），$m=4$个ReLU神经元，NTK参数化：
+\[
+f(x) = \frac{1}{\sqrt{4}}\sum_{j=1}^4 a_j\,\text{ReLU}(w_j x) = \frac{1}{2}\sum_{j=1}^4 a_j\,\text{ReLU}(w_j x).
+\]
+
+初始化：$a_1=0.8,\; a_2=-1.2,\; a_3=0.5,\; a_4=-0.3$。
+
+$w_1=1.5,\; w_2=-0.7,\; w_3=0.3,\; w_4=-1.1$。
+
+训练数据：$x_1=1,\; x_2=-1$。
+
+ReLU导数：$\text{ReLU}'(z) = \begin{cases}1 & z>0 \\ 0 & z\le 0\end{cases}$。
+
+\tcblower
+
+\textbf{Step 3a：隐藏层输出（让学生一起算，建议用表格形式在黑板上填）。}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{c|cccc}
+\toprule
+& $j=1$ ($w=1.5$) & $j=2$ ($w=-0.7$) & $j=3$ ($w=0.3$) & $j=4$ ($w=-1.1$) \\
+\midrule
+$w_j\cdot x_1$ ($x_1=1$) & $1.5$ & $-0.7$ & $0.3$ & $-1.1$ \\
+$h_j(x_1)=\text{ReLU}(\cdot)$ & $\mathbf{1.5}$ & $\mathbf{0}$ & $\mathbf{0.3}$ & $\mathbf{0}$ \\
+$\text{ReLU}'(\cdot)$ at $x_1$ & $1$ & $0$ & $1$ & $0$ \\
+\midrule
+$w_j\cdot x_2$ ($x_2=-1$) & $-1.5$ & $0.7$ & $-0.3$ & $1.1$ \\
+$h_j(x_2)=\text{ReLU}(\cdot)$ & $\mathbf{0}$ & $\mathbf{0.7}$ & $\mathbf{0}$ & $\mathbf{1.1}$ \\
+$\text{ReLU}'(\cdot)$ at $x_2$ & $0$ & $1$ & $0$ & $1$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{（提问：注意到什么模式？——$x_1=1$只激活$w_j>0$的神经元（$j=1,3$），$x_2=-1$只激活$w_j<0$的神经元（$j=2,4$）！正权重只对正输入``开门''，负权重只对负输入``开门''。）}
+
+\bigskip
+\textbf{Step 3b：网络输出。}
+\begin{align}
+f(x_1) &= \frac{1}{2}(0.8\times 1.5 + (-1.2)\times 0 + 0.5\times 0.3 + (-0.3)\times 0) \\
+&= \frac{1}{2}(1.2 + 0 + 0.15 + 0) = \frac{1.35}{2} = 0.675.
+\end{align}
+\begin{align}
+f(x_2) &= \frac{1}{2}(0.8\times 0 + (-1.2)\times 0.7 + 0.5\times 0 + (-0.3)\times 1.1) \\
+&= \frac{1}{2}(0 - 0.84 + 0 - 0.33) = \frac{-1.17}{2} = -0.585.
+\end{align}
+
+\bigskip
+\textbf{Step 3c：梯度表（$\bJ$矩阵，$2\times 8$）。}
+
+对$a_j$：$\frac{\partial f}{\partial a_j}\big|_x = \frac{h_j(x)}{2}$。
+
+对$w_j$：$\frac{\partial f}{\partial w_j}\big|_x = \frac{a_j\cdot\text{ReLU}'(w_j x)\cdot x}{2}$。
+
+\medskip
+\textbf{在$x_1=1$处：}
+\begin{center}
+\small
+\begin{tabular}{c|cccc|cccc}
+\toprule
+& $\partial f/\partial a_1$ & $\partial f/\partial a_2$ & $\partial f/\partial a_3$ & $\partial f/\partial a_4$ & $\partial f/\partial w_1$ & $\partial f/\partial w_2$ & $\partial f/\partial w_3$ & $\partial f/\partial w_4$ \\
+\midrule
+$x_1$ & $\frac{1.5}{2}$ & $\frac{0}{2}$ & $\frac{0.3}{2}$ & $\frac{0}{2}$ & $\frac{0.8\cdot 1\cdot 1}{2}$ & $\frac{-1.2\cdot 0\cdot 1}{2}$ & $\frac{0.5\cdot 1\cdot 1}{2}$ & $\frac{-0.3\cdot 0\cdot 1}{2}$ \\[4pt]
+数值 & $0.75$ & $0$ & $0.15$ & $0$ & $0.4$ & $0$ & $0.25$ & $0$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{在$x_2=-1$处：}
+\begin{center}
+\small
+\begin{tabular}{c|cccc|cccc}
+\toprule
+& $\partial f/\partial a_1$ & $\partial f/\partial a_2$ & $\partial f/\partial a_3$ & $\partial f/\partial a_4$ & $\partial f/\partial w_1$ & $\partial f/\partial w_2$ & $\partial f/\partial w_3$ & $\partial f/\partial w_4$ \\
+\midrule
+$x_2$ & $0$ & $0.35$ & $0$ & $0.55$ & $0$ & $\frac{-1.2\cdot 1\cdot(-1)}{2}$ & $0$ & $\frac{-0.3\cdot 1\cdot(-1)}{2}$ \\[4pt]
+数值 & $0$ & $0.35$ & $0$ & $0.55$ & $0$ & $0.6$ & $0$ & $0.15$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+完整Jacobian：
+\[
+\bJ = \begin{pmatrix}
+0.75 & 0 & 0.15 & 0 & 0.4 & 0 & 0.25 & 0 \\
+0 & 0.35 & 0 & 0.55 & 0 & 0.6 & 0 & 0.15
+\end{pmatrix}.
+\]
+
+\textbf{（提问：这个矩阵有什么特殊结构？——两行没有任何非零元素在同一列！$x_1$和$x_2$的梯度完全正交。）}
+
+\bigskip
+\textbf{Step 3d：NTK矩阵。}
+
+$\Theta_{11} = 0.75^2+0.15^2+0.4^2+0.25^2 = 0.5625+0.0225+0.16+0.0625 = 0.8075$。
+
+$\Theta_{22} = 0.35^2+0.55^2+0.6^2+0.15^2 = 0.1225+0.3025+0.36+0.0225 = 0.8075$。
+
+$\Theta_{12} = 0$（每一对对应位置至少有一个为零）。
+
+\[
+\bTheta = \begin{pmatrix} 0.8075 & 0 \\ 0 & 0.8075 \end{pmatrix} = 0.8075\,\bI_2.
+\]
+
+\textbf{NTK是单位矩阵的倍数！}这意味着：
+\begin{itemize}[leftmargin=*]
+\item 两个样本完全解耦：训练$x_1$不影响$x_2$。
+\item 两个方向学习速度相同（无快慢之分）。
+\item 条件数$\kappa = 1$（最好的情况）。
+\end{itemize}
+
+\textbf{为什么会这样？}因为ReLU + 对称输入$(+1,-1)$，使得激活的神经元集合完全不重叠。
+
+\bigskip
+\textbf{Step 3e：分解为$K_a$和$K_w$。}
+
+$K_a(x_1,x_1) = \frac{1}{4}(1.5^2+0^2+0.3^2+0^2) = \frac{2.34}{4} = 0.585$。
+
+$K_w(x_1,x_1) = \frac{1}{4}(0.8^2\cdot 1+0+0.5^2\cdot 1+0)\cdot 1^2 = \frac{0.89}{4} = 0.2225$。
+
+$K_a + K_w = 0.585 + 0.2225 = 0.8075$。$\checkmark$
+
+$K_a(x_1,x_2) = \frac{1}{4}(1.5\cdot 0 + 0\cdot 0.7 + 0.3\cdot 0 + 0\cdot 1.1) = 0$。$\checkmark$
+\end{handcalc}
+
+\begin{classexercise}{2：如果输入不对称呢？（10分钟，同桌合作）}
+把手算3的$x_2$从$-1$改为$x_2=0.5$。
+\begin{enumerate}[label=(\alph*)]
+\item 重新计算$h_j(x_2)$和ReLU导数。（提示：$w_1\cdot 0.5=0.75>0$，$w_3\cdot 0.5=0.15>0$，所以$j=1,3$\textbf{也}被激活了！）
+\item 计算$\Theta_{12}$。还是零吗？
+\item 解释：为什么$x_2=0.5$和$x_1=1$``共享''了神经元1和3？
+\end{enumerate}
+
+\textbf{答案要点：} $\Theta_{12}\neq 0$。因为$x_1=1$和$x_2=0.5$都是正数，所以激活了相同的``正权重''神经元。NTK反映了两个输入在\textbf{哪些神经元上共享激活模式}。
+\end{classexercise}
+
+\begin{classexercise}{3：验证大数定律（5分钟思考）}
+手算3中$K_a(x_1,x_1) = \frac{1}{4}\sum_{j=1}^4 h_j(x_1)^2 = 0.585$。如果$m\to\infty$，这应该收敛到$\E[\text{ReLU}(w\cdot 1)^2]$，$w\sim\cN(0,1)$。
+\begin{enumerate}[label=(\alph*)]
+\item 利用$\E[\text{ReLU}(w)^2] = \E[w^2\cdot\mathbf{1}_{w>0}] = \int_0^\infty w^2\frac{e^{-w^2/2}}{\sqrt{2\pi}}dw = \frac{1}{2}$，验证$0.585$是否接近$0.5$。
+\item $m=4$的``误差''$=0.585-0.5=0.085$。理论预测误差量级$O(1/\sqrt{m})=O(1/2)=0.5$。看起来实际误差比理论界小很多——为什么？
+\end{enumerate}
+
+\textbf{要点：} $O(1/\sqrt{m})$是最坏情况界，实际误差通常小得多。但趋势是对的：$m$越大越接近极限。
+\end{classexercise}
+
+%=============================================================================
+\section{$L$层网络的NTK递归}
+%=============================================================================
+
+\begin{theorem}{NTK递归公式}{ntk-recursion}
+$L$层全连接网络的极限NTK满足：
+\begin{align}
+\Sigma^{(0)}(x,x') &= \frac{1}{d}x^\top x', \\
+\Sigma^{(l+1)}(x,x') &= \sigma_w^2\,\E_{(u,v)\sim\cN(0,\Lambda^{(l)})}\big[\sigma(u)\sigma(v)\big] + \sigma_b^2, \\
+\dot\Sigma^{(l+1)}(x,x') &= \sigma_w^2\,\E_{(u,v)\sim\cN(0,\Lambda^{(l)})}\big[\sigma'(u)\sigma'(v)\big], \\
+\Theta^{(1)} &= \Sigma^{(1)}, \qquad \Theta^{(l+1)} = \Sigma^{(l+1)} + \Theta^{(l)}\cdot\dot\Sigma^{(l+1)}.
+\end{align}
+其中$\Lambda^{(l)} = \begin{pmatrix}\Sigma^{(l)}(x,x) & \Sigma^{(l)}(x,x') \\ \Sigma^{(l)}(x',x) & \Sigma^{(l)}(x',x')\end{pmatrix}$。
+\end{theorem}
+
+展开递归：$\Theta^{(L)} = \Sigma^{(L)} + \Sigma^{(L-1)}\dot\Sigma^{(L)} + \cdots + \Sigma^{(1)}\dot\Sigma^{(2)}\cdots\dot\Sigma^{(L)}$。每一项$=$``梯度从第$l$层开始反向传播到输出''的贡献。
+
+\textbf{ReLU的闭式公式：}定义$\rho^{(l)} = \Sigma^{(l)}(x,x')/\sqrt{\Sigma^{(l)}(x,x)\Sigma^{(l)}(x',x')}$，则
+
+\begin{keyinsight}[——$\rho^{(l)}$是什么？]
+$\Sigma^{(l)}(x,x')$是第$l$层预激活值$h^{(l)}$在两个输入$x,x'$之间的\textbf{协方差}（对随机初始化取期望，$m\to\infty$下）。$\Sigma^{(l)}(x,x)=\text{Var}[h^{(l)}(x)]$。所以$\rho^{(l)}$就是标准的Pearson相关系数：
+\[
+\rho^{(l)} = \frac{\text{Cov}\big[h^{(l)}(x),\; h^{(l)}(x')\big]}{\sqrt{\text{Var}[h^{(l)}(x)]\cdot\text{Var}[h^{(l)}(x')]}}, \qquad \rho^{(l)}\in[-1,1].
+\]
+
+\textbf{物理含义：网络第$l$层认为$x$和$x'$有多``像''。} $\rho^{(l)}=1$说明第$l$层完全分不开这两个输入（预激活值完全相关），$\rho^{(l)}=0$说明第$l$层觉得它们无关。
+
+递归中需要它是因为：计算第$l+1$层的$\E[\sigma(u)\sigma(v)]$时，$(u,v)$是一对相关高斯，相关系数恰好就是$\rho^{(l)}$。归一化之后才能用只依赖$\rho$的函数$\mathcal{F}_{\text{ReLU}}(\rho)$。
+
+\textbf{（提问：$\rho^{(l)}$会随层数怎么变？——对ReLU网络，$\rho^{(l)}$通常随$l$递增趋向1，意味着深层越来越``分不清''不同输入。这就是深层NTK退化为秩1的根源。）}
+\end{keyinsight}
+
+则闭式公式为：
+\begin{align}
+\mathcal{F}_{\text{ReLU}}(\rho) &= \frac{1}{2\pi}\big(\rho(\pi-\arccos\rho)+\sqrt{1-\rho^2}\big), \\
+\dot{\mathcal{F}}_{\text{ReLU}}(\rho) &= \frac{1}{2\pi}(\pi-\arccos\rho).
+\end{align}
+
+\begin{handcalc}{3b：ReLU闭式公式的推导（课堂演示，约15分钟）}
+
+这两个公式是NTK理论中\textbf{用得最多}的解析工具，值得完整推一遍。
+
+\textbf{问题。} 设$(u,v)$服从二维高斯分布
+\[
+\begin{pmatrix}u\\v\end{pmatrix}\sim\cN\!\left(\begin{pmatrix}0\\0\end{pmatrix},\begin{pmatrix}1&\rho\\\rho&1\end{pmatrix}\right),
+\]
+即$u,v$各自标准正态，相关系数为$\rho$。求
+\[
+\mathcal{F}_{\text{ReLU}}(\rho) = \E[\text{ReLU}(u)\,\text{ReLU}(v)], \qquad \dot{\mathcal{F}}_{\text{ReLU}}(\rho) = \E[\text{ReLU}'(u)\,\text{ReLU}'(v)].
+\]
+
+（注：这里假设$\Sigma^{(l)}(x,x)=\Sigma^{(l)}(x',x')=1$，即已做归一化。一般情况只需乘回方差即可。）
+
+\tcblower
+
+\textbf{Part A：推导$\dot{\mathcal{F}}_{\text{ReLU}}(\rho) = \E[\mathbf{1}_{u>0}\mathbf{1}_{v>0}]$（先推简单的）。}
+
+$\text{ReLU}'(z)=\mathbf{1}_{z>0}$，所以
+\[
+\dot{\mathcal{F}}_{\text{ReLU}}(\rho) = \E[\mathbf{1}_{u>0}\,\mathbf{1}_{v>0}] = P(u>0 \text{ 且 } v>0).
+\]
+
+这就是二维标准正态在第一象限的概率！
+
+\textbf{推导$P(u>0,v>0)$：去相关 + 极坐标。}
+
+\textit{Step 1：去相关。} 令$\tilde u = u$，$\tilde v = \frac{v-\rho u}{\sqrt{1-\rho^2}}$，则$\tilde u, \tilde v\sim\cN(0,1)$独立（验证：$\E[\tilde u\tilde v]=\frac{\E[uv]-\rho\E[u^2]}{\sqrt{1-\rho^2}}=\frac{\rho-\rho}{\sqrt{1-\rho^2}}=0$）。
+
+用$\tilde v$反解$v$：$v = \rho\tilde u + \sqrt{1-\rho^2}\,\tilde v$。
+
+所以$v>0 \Leftrightarrow \tilde v > -\frac{\rho}{\sqrt{1-\rho^2}}\tilde u$。记$\alpha = \rho/\sqrt{1-\rho^2}$，则
+\[
+P(u>0,v>0) = P(\tilde u>0,\;\tilde v > -\alpha\tilde u).
+\]
+
+\textit{Step 2：极坐标。} $(\tilde u, \tilde v)$是标准独立二维高斯，联合密度$\frac{1}{2\pi}e^{-(r^2)/2}$关于原点\textbf{旋转对称}。因此概率只取决于区域的\textbf{角度}。
+
+画图：在$(\tilde u, \tilde v)$平面上，条件$\tilde u>0$是半平面（$\theta\in(-\pi/2, \pi/2)$处的右半平面）。条件$\tilde v > -\alpha\tilde u$是直线$\tilde v = -\alpha\tilde u$的上方。
+
+这条直线过原点，斜率$-\alpha$，与正$\tilde u$轴的夹角为$\phi = \arctan(-\alpha) = -\arctan\alpha$。
+
+\textbf{（板书：画$(\tilde u,\tilde v)$平面，标出右半平面和直线$\tilde v=-\alpha\tilde u$，用阴影标出两个条件的交集区域。）}
+
+两个条件的交集是一个\textbf{扇形}，角度范围从$\theta=-\arctan\alpha$到$\theta=\pi/2$，张角为
+\[
+\Delta\theta = \frac{\pi}{2}-(-\arctan\alpha) = \frac{\pi}{2}+\arctan\alpha.
+\]
+
+由旋转对称性，概率$=$张角$/2\pi$：
+\[
+P(u>0,v>0) = \frac{\pi/2+\arctan\alpha}{2\pi}.
+\]
+
+\textit{Step 3：代回$\rho$。} $\alpha=\rho/\sqrt{1-\rho^2}$。
+
+$\arctan\alpha = \arctan\frac{\rho}{\sqrt{1-\rho^2}}$。
+
+画直角三角形：对边$=\rho$，邻边$=\sqrt{1-\rho^2}$，斜边$=1$。所以$\arctan\alpha = \arcsin\rho$。
+
+\[
+\boxed{P(u>0,v>0) = \frac{1}{2\pi}\left(\frac{\pi}{2}+\arcsin\rho\right) = \frac{1}{4}+\frac{\arcsin\rho}{2\pi}.}
+\]
+
+\textbf{（这就是Sheppard (1899)的经典公式。核心思想：去相关$\to$旋转对称$\to$概率$=$角度占比。）}
+
+等价地，利用$\arcsin(\rho)=\pi/2-\arccos(\rho)$：
+\[
+P(u>0, v>0) = \frac{1}{4}+\frac{\pi/2-\arccos\rho}{2\pi} = \frac{1}{4}+\frac{1}{4}-\frac{\arccos\rho}{2\pi} = \frac{1}{2}-\frac{\arccos\rho}{2\pi} = \frac{\pi-\arccos\rho}{2\pi}.
+\]
+\[
+\boxed{\dot{\mathcal{F}}_{\text{ReLU}}(\rho) = \frac{1}{2\pi}(\pi-\arccos\rho).}
+\]
+
+\textbf{验证边界：}
+\begin{itemize}[leftmargin=*]
+\item $\rho=1$（$u=v$）：$P(u>0,v>0)=P(u>0)=1/2$。公式：$\frac{1}{2\pi}(\pi-0)=\frac{1}{2}$。$\checkmark$
+\item $\rho=0$（独立）：$P=1/2\times 1/2=1/4$。公式：$\frac{1}{2\pi}(\pi-\pi/2)=\frac{1}{4}$。$\checkmark$
+\item $\rho=-1$（$v=-u$）：$P(u>0,v>0)=P(u>0,-u>0)=0$。公式：$\frac{1}{2\pi}(\pi-\pi)=0$。$\checkmark$
+\end{itemize}
+
+\textbf{（提问学生：$\rho=0$时$\dot{\mathcal{F}}=1/4$，意味着什么？——两个独立的ReLU神经元，它们的导数同时非零的概率是$1/4$。只有当两个输入都落在``开''的半边时，反向传播的梯度才能同时通过这两个神经元。）}
+
+\bigskip
+\textbf{Part B：推导$\mathcal{F}_{\text{ReLU}}(\rho) = \E[\text{ReLU}(u)\,\text{ReLU}(v)]$。}
+
+$\text{ReLU}(u)\,\text{ReLU}(v) = u\,v\,\mathbf{1}_{u>0}\mathbf{1}_{v>0}$，所以
+\[
+\mathcal{F}_{\text{ReLU}}(\rho) = \E[u\,v\,\mathbf{1}_{u>0}\,\mathbf{1}_{v>0}].
+\]
+
+\textbf{方法：参数化二维高斯。} 令$u=z_1$，$v=\rho z_1+\sqrt{1-\rho^2}\,z_2$，其中$z_1,z_2\sim\cN(0,1)$独立。
+
+验证：$\E[v]=0$，$\E[v^2]=\rho^2+1-\rho^2=1$，$\E[uv]=\rho$。$\checkmark$
+
+代入：
+\begin{align}
+\mathcal{F} &= \E\!\left[z_1\big(\rho z_1+\sqrt{1-\rho^2}\,z_2\big)\,\mathbf{1}_{z_1>0}\,\mathbf{1}_{\rho z_1+\sqrt{1-\rho^2}\,z_2>0}\right] \\
+&= \rho\,\E[z_1^2\,\mathbf{1}_{z_1>0}\,\mathbf{1}_{v>0}] + \sqrt{1-\rho^2}\,\E[z_1 z_2\,\mathbf{1}_{z_1>0}\,\mathbf{1}_{v>0}].
+\end{align}
+
+分别计算这两项。
+
+\medskip
+\textit{第一项：$I_1 = \E[z_1^2\,\mathbf{1}_{z_1>0}\,\mathbf{1}_{v>0}]$。}
+
+条件在$z_1>0$上（概率$1/2$），$z_1^2$的条件期望就是截断正态的二阶矩。但我们还需要$v>0$的条件。
+
+具体积分（先对$z_2$积分，再对$z_1$积分）：
+
+$v>0 \Leftrightarrow z_2 > -\rho z_1/\sqrt{1-\rho^2}$。记$\alpha=\rho/\sqrt{1-\rho^2}$，则$v>0\Leftrightarrow z_2>-\alpha z_1$。
+
+\[
+I_1 = \int_0^\infty \frac{z_1^2\,e^{-z_1^2/2}}{\sqrt{2\pi}}\left[\int_{-\alpha z_1}^\infty \frac{e^{-z_2^2/2}}{\sqrt{2\pi}}dz_2\right]dz_1 = \int_0^\infty \frac{z_1^2\,e^{-z_1^2/2}}{\sqrt{2\pi}}\,\Phi(\alpha z_1)\,dz_1,
+\]
+其中$\Phi$是标准正态CDF。
+
+\medskip
+\textit{第二项：$I_2 = \E[z_1 z_2\,\mathbf{1}_{z_1>0}\,\mathbf{1}_{v>0}]$。}
+
+\[
+I_2 = \int_0^\infty \frac{z_1\,e^{-z_1^2/2}}{\sqrt{2\pi}}\left[\int_{-\alpha z_1}^\infty \frac{z_2\,e^{-z_2^2/2}}{\sqrt{2\pi}}dz_2\right]dz_1.
+\]
+
+内层积分：$\int_{-\alpha z_1}^\infty z_2\frac{e^{-z_2^2/2}}{\sqrt{2\pi}}dz_2 = \frac{e^{-\alpha^2 z_1^2/2}}{\sqrt{2\pi}}$（标准正态的尾部期望公式$\E[Z|Z>a]=\phi(a)/\bar\Phi(a)$的变体；直接算：$\int_a^\infty z e^{-z^2/2}dz = e^{-a^2/2}$）。
+
+\[
+I_2 = \int_0^\infty \frac{z_1\,e^{-z_1^2/2}}{\sqrt{2\pi}}\cdot\frac{e^{-\alpha^2 z_1^2/2}}{\sqrt{2\pi}}\,dz_1 = \frac{1}{2\pi}\int_0^\infty z_1\,e^{-z_1^2(1+\alpha^2)/2}\,dz_1.
+\]
+
+$1+\alpha^2 = 1+\rho^2/(1-\rho^2)=1/(1-\rho^2)$。所以
+\[
+I_2 = \frac{1}{2\pi}\int_0^\infty z_1\,e^{-z_1^2/(2(1-\rho^2))}\,dz_1 = \frac{1}{2\pi}(1-\rho^2).
+\]
+（利用$\int_0^\infty z e^{-z^2/(2\sigma^2)}dz = \sigma^2$。）
+
+\medskip
+\textit{第一项$I_1$的计算（稍难，用分部积分或查表）。}
+
+$I_1$的完整计算需要用到$\int_0^\infty z^2\phi(z)\Phi(\alpha z)dz$的公式。经典结果（可通过极坐标变换推导）：
+
+\[
+\int_0^\infty z^2\phi(z)\Phi(\alpha z)dz = \frac{1}{4}+\frac{\alpha}{2\pi\sqrt{1+\alpha^2}}+\frac{1}{2\pi}\arctan(\alpha).
+\]
+
+代入$\alpha=\rho/\sqrt{1-\rho^2}$，注意$\arctan(\alpha)=\arctan(\rho/\sqrt{1-\rho^2})=\arcsin(\rho)$（画直角三角形即可验证），以及$\alpha/\sqrt{1+\alpha^2}=\rho$：
+\[
+I_1 = \frac{1}{4}+\frac{\rho}{2\pi}+\frac{\arcsin\rho}{2\pi}.
+\]
+
+\medskip
+\textit{合并。}
+\begin{align}
+\mathcal{F}_{\text{ReLU}}(\rho) &= \rho\cdot I_1 + \sqrt{1-\rho^2}\cdot I_2 \\
+&= \rho\left(\frac{1}{4}+\frac{\rho}{2\pi}+\frac{\arcsin\rho}{2\pi}\right) + \sqrt{1-\rho^2}\cdot\frac{1-\rho^2}{2\pi} \\
+&= \frac{\rho}{4}+\frac{\rho^2}{2\pi}+\frac{\rho\arcsin\rho}{2\pi}+\frac{(1-\rho^2)^{3/2}}{2\pi}.
+\end{align}
+
+这还不是最终形式。利用$\arcsin\rho = \pi/2-\arccos\rho$整理：
+\begin{align}
+&= \frac{\rho}{4}+\frac{\rho^2}{2\pi}+\frac{\rho(\pi/2-\arccos\rho)}{2\pi}+\frac{(1-\rho^2)^{3/2}}{2\pi} \\
+&= \frac{\rho}{4}+\frac{\rho^2}{2\pi}+\frac{\rho}{4}-\frac{\rho\arccos\rho}{2\pi}+\frac{(1-\rho^2)^{3/2}}{2\pi} \\
+&= \frac{\rho}{2}+\frac{1}{2\pi}\left(\rho^2-\rho\arccos\rho+(1-\rho^2)^{3/2}\right).
+\end{align}
+
+\textbf{但更常见的写法}是利用$(1-\rho^2)^{3/2}=(1-\rho^2)\sqrt{1-\rho^2}$，并注意到$\rho^2+(1-\rho^2)=1$，最终化简为：
+
+\[
+\boxed{\mathcal{F}_{\text{ReLU}}(\rho) = \frac{1}{2\pi}\Big(\rho(\pi-\arccos\rho)+\sqrt{1-\rho^2}\Big).}
+\]
+
+\textbf{（这一步化简需要一点耐心，建议在黑板上写出来让学生一起验证。关键等式：$\frac{\rho}{2}+\frac{\rho^2}{2\pi}=\frac{\rho}{2\pi}(\pi+\rho)$，然后收集$\rho\arccos\rho$项。）}
+
+\medskip
+\textbf{验证边界：}
+\begin{itemize}[leftmargin=*]
+\item $\rho=1$：$\mathcal{F}=\frac{1}{2\pi}(1\cdot(\pi-0)+0)=\frac{1}{2}$。即$\E[\text{ReLU}(u)^2]=\E[u^2\mathbf{1}_{u>0}]=\frac{1}{2}$。$\checkmark$
+\item $\rho=0$：$\mathcal{F}=\frac{1}{2\pi}(0+1)=\frac{1}{2\pi}\approx 0.159$。即$\E[\text{ReLU}(u)]^2=(\frac{1}{\sqrt{2\pi}})^2=\frac{1}{2\pi}$（因为$u,v$独立）。$\checkmark$
+\item $\rho=-1$：$\mathcal{F}=\frac{1}{2\pi}(-1\cdot(\pi-\pi)+0)=0$。即$\E[\text{ReLU}(u)\text{ReLU}(-u)]=0$（不可能同时为正）。$\checkmark$
+\end{itemize}
+
+\medskip
+\textbf{Part C：直觉总结。}
+
+$\mathcal{F}_{\text{ReLU}}(\rho)$度量的是：两个相关系数为$\rho$的高斯信号经过ReLU后的``残余相关性''。$\rho=1$时完全相关（$1/2$），$\rho=0$时弱相关（$1/(2\pi)\approx 0.16$），$\rho=-1$时完全无关（$0$）。ReLU的半波整流效应把负相关性``截断''了。
+
+$\dot{\mathcal{F}}_{\text{ReLU}}(\rho)$度量的是：两个信号同时``开''（同时在ReLU的线性区）的概率。这控制了反向传播时梯度能不能同时通过两个对应的神经元。
+\end{handcalc}
+
+\begin{classexercise}{3b：验证ReLU公式（5分钟）}
+\begin{enumerate}[label=(\alph*)]
+\item 用$\mathcal{F}_{\text{ReLU}}$公式计算$\rho=1/2$时的值。（答案：$\frac{1}{2\pi}(\frac{1}{2}(\pi-\pi/3)+\frac{\sqrt{3}}{2})=\frac{1}{2\pi}(\frac{\pi}{3}+\frac{\sqrt{3}}{2})\approx 0.271$。）
+\item 对比$\rho=1/2$时线性核的值（就是$1/2$本身）。ReLU核小于线性核，为什么？（ReLU把负半边截断了，损失了一部分相关性。）
+\item $\dot{\mathcal{F}}_{\text{ReLU}}(1/2)=\frac{1}{2\pi}(\pi-\pi/3)=\frac{1}{3}\approx 0.333$。解释：当$\rho=1/2$时，两个ReLU神经元同时``开''的概率是$1/3$。
+\end{enumerate}
+\end{classexercise}
+
+\begin{handcalc}{4：两层ReLU网络的极限NTK（课堂演示，约10分钟）}
+
+用上面的闭式公式计算$\Theta^*(x_1,x_2)$，其中$x_1=(1,0)^\top, x_2=(0,1)^\top \in\R^2$。
+
+\textbf{第0层：}$\Sigma^{(0)}(x_i,x_j) = \frac{1}{2}x_i^\top x_j$。
+\[
+\Sigma^{(0)} = \frac{1}{2}\begin{pmatrix}1&0\\0&1\end{pmatrix}, \qquad \rho^{(0)} = \frac{0}{\sqrt{0.5\times 0.5}} = 0.
+\]
+
+\textbf{第1层：}（取$\sigma_w^2=2, \sigma_b^2=0$，即Kaiming init。）
+
+$\Sigma^{(1)}(x_i,x_i) = 2\cdot\mathcal{F}_{\text{ReLU}}(1)\cdot\Sigma^{(0)}(x_i,x_i)$。先算$\mathcal{F}_{\text{ReLU}}(1) = \frac{1}{2\pi}(1\cdot(\pi-0)+0)=\frac{1}{2}$。
+
+所以$\Sigma^{(1)}(x_i,x_i) = 2\times\frac{1}{2}\times\frac{1}{2}=\frac{1}{2}$。
+
+$\mathcal{F}_{\text{ReLU}}(0) = \frac{1}{2\pi}(0+1) = \frac{1}{2\pi}\approx 0.159$。
+
+$\Sigma^{(1)}(x_1,x_2) = 2\times 0.159\times\frac{1}{2} = 0.159$。
+
+$\rho^{(1)} = 0.159/0.5 = 0.318$。
+
+$\dot\Sigma^{(1)}$：$\dot{\mathcal{F}}_{\text{ReLU}}(0)=\frac{1}{2\pi}(\pi-\pi/2)=\frac{1}{4}$。$\dot\Sigma^{(1)}(x_1,x_2) = 2\times\frac{1}{4} = \frac{1}{2}$。
+
+\textbf{NTK（两层）：}
+\begin{align}
+\Theta^*(x_1,x_2) &= \Sigma^{(1)}(x_1,x_2) + \dot\Sigma^{(1)}(x_1,x_2)\cdot\Sigma^{(0)}(x_1,x_2) \\
+&= 0.159 + 0.5\times 0 = 0.159.
+\end{align}
+
+$\Theta^*(x_1,x_1) = 0.5 + 0.5\times 0.5 = 0.75$。
+
+\[
+\bTheta^* = \begin{pmatrix}0.75 & 0.159 \\ 0.159 & 0.75\end{pmatrix}.
+\]
+
+特征值：$\lambda_1=0.909, \lambda_2=0.591$。条件数$\kappa=1.54$。
+
+\textbf{和手算3（$m=4$有限宽度）比较：} 手算3得到$\bTheta=0.8075\bI$，$\kappa=1$。极限NTK给出$\kappa=1.54$——有限宽度的``完全解耦''在$m\to\infty$后消失了，因为极限下不同样本必然共享一些核值。
+\end{handcalc}
+
+%=============================================================================
+\section{Jacot三大定理与核冻结}
+%=============================================================================
+
+\begin{theorem}{Jacot定理1：初始化收敛}{j1}
+$m\to\infty$时，$\bTheta_0\xrightarrow{P}\bTheta^*$，$|\Theta_0(x_i,x_j)-\Theta^*(x_i,x_j)|=O_P(m^{-1/2})$。
+\end{theorem}
+
+\begin{theorem}{Jacot定理2：核冻结}{j2}
+$m\to\infty$时，$\sup_{0\le t\le T}\|\bTheta(t)-\bTheta^*\|\to 0$。
+\end{theorem}
+
+\begin{theorem}{Jacot定理3：全局线性收敛}{j3}
+若$\lambda_{\min}(\bTheta^*)>0$，则$L(\theta(t))\le L(\theta(0))e^{-\eta\lambda_{\min}t}$。
+\end{theorem}
+
+\begin{keyinsight}[——三个定理的物理图像（务必讲透！）]
+
+\textbf{定理1的物理：随机探测器的密度稳定。}
+
+想象$m$个神经元是$m$个``探测器''，随机撒在输入空间里。每个探测器对输入$x$有一个响应$\nabla_\theta f(x)$。NTK $\Theta(x,x')$本质上是在问：``$x$和$x'$激活了多相似的探测器群？'' 当$m\to\infty$，探测器密度趋于连续分布，这个``相似度''就稳定下来了——不再依赖于你具体撒了哪些探测器。这就是大数定律：足够多的随机采样收敛到期望。
+\end{keyinsight}
+
+\begin{keyinsight}[——定理2：核冻结（最关键的物理图像）]
+
+训练的时候每个参数都在动，为什么NTK不动？因为NTK参数化下每个参数只动了$O(1/\sqrt{m})$。
+
+\textbf{旋钮比喻。} 你有一百万个旋钮（参数），每个只拧了百万分之一圈。网络的输出是一百万个旋钮的``投票结果''——每个微小调整汇聚起来，投票结果变了$O(1)$（函数学到了东西）。但NTK度量的是``投票规则本身''（哪些输入会被类似对待），而投票规则取决于每个旋钮的\textbf{位置}，不是投票结果。每个旋钮只动了一丁点，所以投票规则几乎没变。
+
+\textbf{眼镜比喻。} NTK冻结意味着网络从头到尾都在用``同一副眼镜''（同一组特征$\sigma(\bw_j^\top x)$）看数据。训练只是在调整``看到之后怎么决策''（线性组合权重$a_j$），而眼镜的镜片（隐藏层特征）因为$\bw_j$几乎没动，所以几乎没变。
+\end{keyinsight}
+
+\begin{keyinsight}[——定理3：全局收敛 = 线性弹簧系统]
+
+一旦NTK冻结，训练动力学$\dot{\br}=-\bTheta^*\br$就是一个\textbf{线性阻尼系统}——像一组弹簧把残差拉向零。$\bTheta^*$正定意味着``每个方向都有回复力''，没有死区。最小特征值$\lambda_{\min}$就是最弱的那根弹簧的刚度，决定了最慢的收敛方向。
+
+\textbf{三个定理串起来的物理故事：}
+
+\medskip
+\begin{center}
+\begin{tikzpicture}[node distance=0.3cm, every node/.style={align=center, font=\small}]
+\node (a) [draw, rounded corners, fill=blue!8, minimum width=4cm] {无穷多随机探测器\\$\downarrow$\\探测器分布稳定\\（定理1）};
+\node (b) [draw, rounded corners, fill=blue!8, minimum width=4cm, right=of a, xshift=1cm] {每个探测器几乎不动\\$\downarrow$\\分布在训练中不变\\（定理2：核冻结）};
+\node (c) [draw, rounded corners, fill=blue!8, minimum width=4cm, right=of b, xshift=1cm] {固定探测器上线性回归\\$\downarrow$\\全局凸，必收敛\\（定理3）};
+\draw[->,thick] (a) -- (b);
+\draw[->,thick] (b) -- (c);
+\end{tikzpicture}
+\end{center}
+\medskip
+
+\textbf{核冻结的代价}也由此清楚了：眼镜不换意味着\textbf{如果初始随机眼镜恰好看不清数据的关键结构，你就永远看不清}。这就是NTK在CIFAR-10上77\% vs 训练后93\%的根本原因——那16\%需要``换眼镜''（feature learning），而核冻结禁止了这件事。
+
+这正是下半场$\mu$P要解决的问题：找到一种参数化方式，让网络在训练中\textbf{可以换眼镜}。
+\end{keyinsight}
+
+\begin{teachingtip}
+这三个物理图像非常重要，建议在黑板上\textbf{分别画三幅图}：
+
+（1）定理1：画一堆随机点（神经元）在输入空间，标注``$m$越大$\to$密度越均匀$\to$NTK稳定''。
+
+（2）定理2：画一个大圆（参数空间），起点和终点很近（$O(1/\sqrt{m})$），标注``参数几乎不动$\to$特征冻结$\to$NTK冻结''。旁边画固定不变的眼镜。
+
+（3）定理3：画一个二维势能碗（NTK的特征方向），球从碗壁滚到底部。两个方向的碗壁陡度不同（$\lambda_1$和$\lambda_2$），标注``快方向''和``慢方向''。
+
+然后用手算1的数字具体化：``我们的学习任务恰好全在$\lambda_2=0.125$的慢方向上，这就是为什么收敛时间常数$\tau=8$而不是$\tau=2$。''
+\end{teachingtip}
+
+\begin{handcalc}{5：为什么NTK会冻结——完整量级分析（约15分钟）}
+
+NTK参数化两层网络，$f(x)=\frac{1}{\sqrt{m}}\sum_j a_j\sigma(\bw_j^\top x)$，$n$个训练点。
+
+\textbf{目标：证明每个参数只动$O(1/\sqrt{m})$，从而NTK变化$O(1/\sqrt{m})\to 0$。}
+
+\tcblower
+
+\textbf{Step 5a：梯度的量级。}
+
+$\frac{\partial L}{\partial a_j} = \sum_{i=1}^n (f(x_i)-y_i)\cdot\frac{\partial f(x_i)}{\partial a_j}$。
+
+$|f(x_i)-y_i| = O(1)$（初始时输出和目标都$O(1)$）。
+
+$|\partial f/\partial a_j| = |\sigma(\bw_j^\top x_i)/\sqrt{m}| = O(1/\sqrt{m})$。
+
+$n$项求和：$|\partial L/\partial a_j| = O(n/\sqrt{m})$。
+
+\medskip
+\textbf{同理：}$|\partial L/\partial w_{jk}| = O(n/\sqrt{m})$（因为$|\partial f/\partial w_{jk}| = |a_j\sigma'(\bw_j^\top x_i)x_{ik}/\sqrt{m}| = O(1/\sqrt{m})$）。
+
+\medskip
+\textbf{Step 5b：一步更新的量级。}
+
+$|\Delta a_j| = \eta|\partial L/\partial a_j| = O(\eta n/\sqrt{m})$。
+
+$|\Delta w_{jk}| = O(\eta n/\sqrt{m})$。
+
+\textbf{代入具体数字}（$m=10^4, n=100, \eta=0.01$）：
+\[
+|\Delta a_j| \sim \frac{0.01\times 100}{\sqrt{10^4}} = \frac{1}{100} = 0.01.
+\]
+每个参数只动了$1\%$。
+
+\medskip
+\textbf{Step 5c：$T$步后的累积变化。}
+
+$|\theta_p(T)-\theta_p(0)| \le T\cdot|\Delta\theta_p| = O(\eta n T/\sqrt{m})$。
+
+对$m=10^4, n=100, \eta=0.01, T=100$：
+\[
+|\theta_p(T)-\theta_p(0)| \sim \frac{0.01\times 100\times 100}{\sqrt{10^4}} = 1.
+\]
+$m=10^4$时参数变化量$O(1)$，不够小！需要更大的$m$。
+
+$m=10^8$：$|\Delta\theta_p|\sim 10^{-4}$，$T=100$步后$\sim 0.01$。很小。$\checkmark$
+
+\medskip
+\textbf{Step 5d：NTK的变化。}
+
+$\Theta(x,x')=\sum_p (\partial f/\partial\theta_p)|_x\cdot(\partial f/\partial\theta_p)|_{x'}$。
+
+$\partial f/\partial\theta_p$对$\theta_q$的二阶导（Hessian）量级$O(1/m)$（因为网络中每个参数出现在$O(1)$个神经元中，而$1/\sqrt{m}$缩放引入额外的$1/\sqrt{m}$因子）。
+
+所以$\Delta(\partial f/\partial\theta_p) = O(|\Delta\theta|\cdot 1/m\cdot\sqrt{P}) = O(1/\sqrt{m}\cdot 1/m\cdot\sqrt{m}) = O(1/m)$。
+
+从而$\Delta\Theta = O(P\cdot 1/\sqrt{m}\cdot 1/m) = O(\sqrt{m}\cdot 1/m) = O(1/\sqrt{m}) \to 0$。
+
+\textbf{（更直接的论证：$\Delta\bTheta = \Delta(\bJ\bJ^\top) = \Delta\bJ\cdot\bJ^\top+\bJ\cdot\Delta\bJ^\top$，而$\|\Delta\bJ\|=O(1/\sqrt{m})$。）}
+
+\medskip
+\textbf{完整量级速查表（板书）：}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{llll}
+\toprule
+量 & 含义 & 量级 & $m=10^6$时的数值 \\
+\midrule
+$|\partial f/\partial\theta_p|$ & 单个参数对输出的影响 & $O(1/\sqrt{m})$ & $\sim 10^{-3}$ \\
+$\Theta(x,x')$ & NTK核值（所有参数影响的总和） & $O(1)$ & $\sim 1$ \\
+$|\partial L/\partial\theta_p|$ & 单个参数的损失梯度 & $O(n/\sqrt{m})$ & $\sim 0.1$（$n=100$）\\
+$|\Delta\theta_p|$（单步） & 单个参数一步的变化量 & $O(\eta n/\sqrt{m})$ & $\sim 10^{-3}$ \\
+$|\Delta f(x)|$（单步） & 网络输出一步的变化量 & $O(\eta)$ & $\sim 0.01$ \\
+$|\Delta\Theta(x,x')|$（单步） & NTK一步的漂移量 & $O(1/\sqrt{m})$ & $\sim 10^{-3}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{结论：}只要$m\gg n^2$，参数几乎不动$\Rightarrow$Jacobian几乎不动$\Rightarrow$NTK几乎不动$\Rightarrow$动力学线性化。
+\end{handcalc}
+
+%=============================================================================
+\section{核回归与谱分析}
+%=============================================================================
+
+\begin{handcalc}{5b：核回归闭式预测（约8分钟）}
+
+用手算1的NTK做核回归。$\bTheta^*=\frac{1}{16}\begin{pmatrix}5&3\\3&5\end{pmatrix}$，$\bu(0)=(0.5,0.5)^\top$，$\by=(1,0)^\top$。
+
+\textbf{核回归公式：}$\bu(\infty) = \bu(0) + \bTheta^*[\bTheta^*]^{-1}(\by-\bu(0)) = \by$。
+
+但更有意义的是\textbf{预测新的点}。假设测试点$x_*=0$，且$\Theta^*(x_*,x_1)=0.28$，$\Theta^*(x_*,x_2)=0.28$（由对称性）。
+
+\tcblower
+
+\textbf{第1步：}$\by-\bu(0)=(0.5,-0.5)^\top$。
+
+\textbf{第2步：}$[\bTheta^*]^{-1}$。$\det=\frac{1}{256}(25-9)=\frac{16}{256}=\frac{1}{16}$。
+\[
+[\bTheta^*]^{-1} = 16\cdot\frac{1}{16}\begin{pmatrix}5&-3\\-3&5\end{pmatrix} = \begin{pmatrix}5&-3\\-3&5\end{pmatrix}.
+\]
+
+\textbf{第3步：}$[\bTheta^*]^{-1}(\by-\bu(0)) = \begin{pmatrix}5&-3\\-3&5\end{pmatrix}\begin{pmatrix}0.5\\-0.5\end{pmatrix} = \begin{pmatrix}2.5+1.5\\-1.5-2.5\end{pmatrix} = \begin{pmatrix}4\\-4\end{pmatrix}$。
+
+\textbf{第4步：}训练数据上验证$\bu(\infty)=(0.5,0.5)^\top+\frac{1}{16}\begin{pmatrix}5&3\\3&5\end{pmatrix}\begin{pmatrix}4\\-4\end{pmatrix}=(0.5,0.5)^\top+\begin{pmatrix}0.5\\-0.5\end{pmatrix}=(1,0)^\top=\by$。$\checkmark$
+
+\textbf{第5步：}测试点预测。
+\[
+f(x_*;\infty) = f(x_*;0) + (0.28, 0.28)\begin{pmatrix}4\\-4\end{pmatrix} = 0.5 + 0.28\times 4 + 0.28\times(-4) = 0.5 + 0 = 0.5.
+\]
+
+\textbf{（提问：$f(0)$没变！为什么？——因为$\Theta^*(x_*,x_1)=\Theta^*(x_*,x_2)$，而$[\bTheta^*]^{-1}(\by-\bu(0))$的两个分量正好相反$(4,-4)$，所以内积为零。中间点``两边拉扯相消''。）}
+
+\textbf{如果$\Theta^*(x_*,x_1)=0.3, \Theta^*(x_*,x_2)=0.2$呢？}
+\[
+f(x_*;\infty) = 0.5 + 0.3\times 4 + 0.2\times(-4) = 0.5 + 1.2 - 0.8 = 0.9.
+\]
+更靠近$x_1$方向$\Rightarrow$预测更接近$y_1=1$。这就是核回归的``内插''行为。
+\end{handcalc}
+
+\begin{classexercise}{4：提前停止 = 正则化（8分钟）}
+NTK特征值$\lambda_1=10, \lambda_2=1, \lambda_3=0.01$，初始残差各分量$c_1=c_2=c_3=1$。
+\begin{enumerate}[label=(\alph*)]
+\item 计算$t=1$时各方向的残留比例$e^{-\lambda_k}$。
+\item 如果信号在$\bv_1,\bv_2$方向，噪声在$\bv_3$方向，$t=1$停止训练的效果？
+\item 找到$t^*$使得$\bv_2$方向学了95\%（$e^{-\lambda_2 t^*}=0.05$）。此时$\bv_3$方向学了多少？
+\end{enumerate}
+
+\textbf{答案：} (a) $e^{-10}\approx 4.5\times 10^{-5}$，$e^{-1}\approx 0.37$，$e^{-0.01}\approx 0.99$。(b) $\bv_1$学完，$\bv_2$学了63\%，噪声$\bv_3$只学了1\%——提前停止自动过滤噪声。(c) $t^*=\ln 20\approx 3$，$e^{-0.03}\approx 0.97$，噪声只学了3\%。\textbf{这就是为什么提前停止有正则化效果。}
+\end{classexercise}
+
+%=============================================================================
+\section{NTK的致命缺陷：丢失Feature Learning}
+%=============================================================================
+
+\subsection{什么是Feature Learning？}
+
+在讨论NTK``丢失了feature learning''之前，我们必须先说清楚这个词到底是什么意思。
+
+\begin{keyinsight}[——Feature Learning的定义与直觉]
+
+一个神经网络$f(x;\theta)$可以分解为两部分：
+\[
+f(x;\theta) = \underbrace{W^{(L)}}_{\text{最后一层（线性分类/回归头）}} \cdot \underbrace{\phi(x;\, W^{(1)},\dots,W^{(L-1)})}_{\text{前面所有层 = 特征提取器}}.
+\]
+其中$\phi(x)$是网络从原始输入$x$中\textbf{提取出来的特征表示}（也叫representation或embedding）。
+
+\textbf{Feature learning = 训练过程中$\phi$在变化。}
+
+具体地说：
+\begin{itemize}[leftmargin=*]
+\item \textbf{有}feature learning：$W^{(1)},\dots,W^{(L-1)}$在训练中发生有意义的变化，$\phi(x)$从初始的随机映射逐渐变成\textbf{对当前任务有用的}表示。例如，训练图像分类器时，$\phi(x)$从随机噪声逐渐变成``能区分猫和狗的特征''。
+\item \textbf{无}feature learning：$W^{(1)},\dots,W^{(L-1)}$几乎不变（如NTK regime），$\phi(x)\approx\phi_0(x)$始终是初始化时的随机特征。训练只调整最后一层$W^{(L)}$来``尽力利用''这些随机特征。
+\end{itemize}
+\end{keyinsight}
+
+\textbf{为什么feature learning重要？} 用一个具体例子说明。
+
+\begin{handcalc}{5c：Feature Learning的有无——一个直觉例子（约5分钟）}
+
+\textbf{任务：}区分手写数字``6''和``9''。
+
+\textbf{无feature learning（NTK regime）：}
+
+网络用\textbf{初始化时的随机特征}$\phi_0(x)$看图片。$\phi_0$是随机的——它可能检测一些随机的边缘、纹理、颜色模式，与``6和9的区别''毫无关系。
+
+训练只调最后一层$W^{(L)}$：试图找到$W^{(L)}$使得$W^{(L)}\phi_0(\text{``6''}) \neq W^{(L)}\phi_0(\text{``9''})$。
+
+问题：如果$\phi_0$恰好把``6''和``9''映射到了很接近的向量（因为它们的像素结构确实很像，只是旋转了180°），那无论怎么调$W^{(L)}$都分不开。
+
+\tcblower
+
+\textbf{有feature learning（$\mu$P / 实际训练）：}
+
+训练过程中$\phi(x)$逐渐变化：
+\begin{enumerate}[leftmargin=*]
+\item 初始：$\phi_0$是随机特征，``6''和``9''的表示很接近。
+\item 训练中：网络发现``6''和``9''在\textbf{下半部分}有关键区别（``6''下面是圆，``9''下面是尾巴）。于是$\phi$逐渐``学会''重点关注图片的下半部分。
+\item 训练后：$\phi(\text{``6''})$和$\phi(\text{``9''})$被映射到\textbf{很远}的向量，$W^{(L)}$轻松就能分开。
+\end{enumerate}
+
+\textbf{这就是feature learning——网络在训练中自动发现``什么特征对当前任务有用''，并重组内部表示来放大这些特征。}
+
+\medskip
+\textbf{数学上怎么度量？} 看隐藏层表示$\phi(x)$在训练前后的变化量。定义
+\[
+\Delta\phi = \|\phi(x;\theta_T) - \phi(x;\theta_0)\|.
+\]
+\begin{itemize}[leftmargin=*]
+\item NTK regime：$\Delta\phi = O(1/\sqrt{m}) \to 0$。\textbf{特征冻结。}
+\item $\mu$P：$\Delta\phi$的经验分布变化$=O(1)$。\textbf{特征在学习。}
+\end{itemize}
+
+也可以用\textbf{NTK的漂移}来度量：如果$\bTheta(T)\neq\bTheta(0)$，说明网络对``输入之间的相似性''的理解在变——这正是feature learning。
+\end{handcalc}
+
+\begin{classexercise}{4b：你见过的Feature Learning（3分钟讨论）}
+\begin{enumerate}[label=(\alph*)]
+\item 用预训练的ResNet提取ImageNet特征，然后冻结ResNet只训练最后一层线性分类器。这算feature learning吗？（不算——$\phi$没变。但预训练阶段是feature learning。）
+\item Fine-tuning整个网络呢？（算——$\phi$在变。）
+\item t-SNE可视化中，训练前不同类别的点混在一起，训练后分成清晰的簇。这说明了什么？（$\phi$变了，把不同类别``推开''了——这就是feature learning的可视化证据。）
+\end{enumerate}
+\end{classexercise}
+
+\subsection{NTK为什么没有Feature Learning？}
+
+回忆手算5的量级分析：NTK参数化下，$|\Delta w_j|=O(1/\sqrt{m})\to 0$。隐藏层权重几乎不动$\Rightarrow$ $\phi(x;\theta)\approx\phi(x;\theta_0)$$\Rightarrow$特征冻结。
+
+直觉重述：NTK网络用\textbf{固定的随机望远镜}看数据，训练只调``看到之后怎么决策''，不换镜头。
+
+\subsection{Feature Learning值多少？}
+
+\begin{tcolorbox}[colback=red!8,colframe=red!60!black,title=\textbf{Feature Learning的量化价值}]
+\begin{center}
+\begin{tabular}{lc}
+\toprule
+方法 & CIFAR-10准确率 \\
+\midrule
+精确NTK核回归（infinite-width） & $\sim$77\% \\
+有限宽度训练的同架构网络 & $\sim$93\% \\
+\textbf{差距 = feature learning的贡献} & \textbf{$\sim$16\%} \\
+\bottomrule
+\end{tabular}
+\end{center}
+NTK网络用\textbf{固定的随机望远镜}看数据。真正的深度学习在训练中\textbf{换镜头}。
+
+\textbf{其他局限：}深度无本质优势（深层NTK退化为秩1），宽度要求$m=\Omega(n^6)$不现实，对架构不敏感，\textbf{最优超参数随宽度漂移}。
+
+\textbf{悬念：能否找到一种参数化，既保持$m\to\infty$极限的好处，又保留feature learning？}
+\end{tcolorbox}
+
+\newpage
+%=============================================================================
+\part{第二次课：$\mu$P与超参数迁移}
+%=============================================================================
+
+%=============================================================================
+\section{$\mu$P的定义与动机}
+%=============================================================================
+
+\subsection{NTK vs $\mu$P：只改两处}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{l|cc}
+\toprule
+& NTK参数化 & $\mu$P \\
+\midrule
+两层网络 & $f=\frac{1}{\sqrt{m}}\sum a_j\sigma(w_j^\top x)$ & $f=\frac{1}{\boxed{m}}\sum a_j\sigma(w_j^\top x)$ \\
+隐藏层学习率 & $\eta$ & $\eta/\boxed{m}$ \\
+输出层学习率 & $\eta$ & $\eta$ \\
+初始化 & $a_j,W_{jk}\sim\cN(0,1)$ & $a_j,W_{jk}\sim\cN(0,1)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+``Maximal Update''的含义：在所有使$m\to\infty$极限非退化（不发散）的参数化中，$\mu$P使\textbf{特征更新与readout更新同阶}——即feature learning不被参数化本身压制。这需要初始化缩放和学习率缩放的\textbf{联合设计}。
+
+%=============================================================================
+\section{从abc-参数化推导$\mu$P}
+%=============================================================================
+
+\begin{handcalc}{6：abc-参数化的完整约束推导（课堂演示，约25分钟）}
+
+\textbf{设置。} 两层网络的通用参数化族（Yang \& Hu, 2021）：
+\[
+f(x;\theta) = m^{-c}\sum_{j=1}^m a_j\,\sigma(w_j^\top x).
+\]
+初始化：$a_j\sim\cN(0,m^{-2a})$，$w_j\sim\cN(0,m^{-2b}I_d)$。
+
+\textbf{所有参数用同一个学习率$\eta$}（不随$m$变化）。
+
+三个指数$(a,b,c)$完全决定了参数化方式。目标：在所有使$m\to\infty$极限存在的$(a,b,c)$中，找到\textbf{特征学习最强}的那个。
+
+为简化，取$b=0$（输入层权重$O(1)$初始化），集中分析$(a,c)$。
+
+\tcblower
+
+\textbf{约束1：初始输出$f=O(1)$。}
+
+$f = m^{-c}\sum_{j=1}^m a_j\sigma(w_j^\top x)$。各项$a_j\sigma(w_j^\top x)$独立、均值零。
+
+单项方差：$\text{Var}[a_j\sigma(w_j^\top x)] = \E[a_j^2]\cdot\E[\sigma(w_j^\top x)^2] = m^{-2a}\cdot\underbrace{\E[\sigma(w^\top x)^2]}_{\triangleq\, C_\sigma,\;=O(1)}$。
+
+$m$项独立和的方差：$m\cdot m^{-2a}\cdot C_\sigma = C_\sigma\,m^{1-2a}$。
+
+乘以$(m^{-c})^2$得$f$的方差：
+\[
+\text{Var}[f] = C_\sigma\,m^{1-2a-2c}.
+\]
+
+$f$不发散要求方差$\le O(1)$，即$1-2a-2c\le 0$：
+\[
+\boxed{a+c\ge \frac{1}{2}.} \qquad\text{（约束1）}
+\]
+
+\textbf{代入检验：}$a=0,c=1/2$：$\text{Var}[f]=C_\sigma\cdot m^0 = C_\sigma = O(1)$。$\checkmark$
+
+$a=0,c=0$：$\text{Var}[f]=C_\sigma\cdot m \to\infty$。发散！$\times$
+
+\bigskip
+\textbf{约束2：一步更新后$\Delta f$不发散。}
+
+用单训练点$(x,y)$的MSE损失$L=\frac{1}{2}(f-y)^2$。记残差$r=f-y=O(1)$（初始时）。
+
+\medskip
+\textit{（2a）输出层$a_j$的更新对$f$的影响。}
+
+$\frac{\partial f}{\partial a_j} = m^{-c}\sigma(w_j^\top x)$，所以
+\[
+\Delta a_j = -\eta\,\frac{\partial L}{\partial a_j} = -\eta\,r\,m^{-c}\sigma(w_j^\top x).
+\]
+
+输出的变化量（\textbf{精确计算，不是量级估计}）：
+\begin{align}
+\Delta f\big|_a &= m^{-c}\sum_{j=1}^m \sigma(w_j^\top x)\cdot\Delta a_j = m^{-c}\sum_j \sigma(w_j^\top x)\cdot\big[-\eta\,r\,m^{-c}\sigma(w_j^\top x)\big] \\
+&= -\eta\,r\,m^{-2c}\sum_{j=1}^m \sigma(w_j^\top x)^2.
+\end{align}
+
+由大数定律，$\frac{1}{m}\sum_j \sigma(w_j^\top x)^2 \to \E[\sigma(w^\top x)^2] = C_\sigma$，所以$\sum_j\sigma^2\approx m\,C_\sigma$。
+
+\[
+\boxed{\Delta f\big|_a = -\eta\,r\,C_\sigma\,m^{1-2c} + O(m^{1/2-2c}).}
+\]
+
+不发散要求$1-2c\le 0$，即：
+\[
+\boxed{c\ge \frac{1}{2}.}\qquad\text{（约束2a）}
+\]
+
+\textbf{（提问：为什么这里出现了$m^{1-2c}$而不是$m^{1-2a-2c}$？——因为$\Delta a_j\propto\sigma(w_j^\top x)$，和前面的$\sigma(w_j^\top x)$\textbf{同向}，所以求和时$m$项\textbf{不是独立的}，而是全部同号地累加。这不是CLT（$\sqrt{m}$增长），而是LLN（$m$增长）！$a$的初始方差$m^{-2a}$不出现在这里，因为更新$\Delta a_j$不依赖于$a_j$的初始值。）}
+
+\medskip
+\textit{（2b）隐藏层$w_j$的更新对$f$的影响。}
+
+$\frac{\partial f}{\partial w_j} = m^{-c}\,a_j\,\sigma'(w_j^\top x)\,x$，所以
+\[
+\Delta w_j = -\eta\,r\,m^{-c}\,a_j\,\sigma'(w_j^\top x)\,x.
+\]
+
+隐藏层输出的变化（即\textbf{特征变化}）：
+\[
+\Delta h_j \triangleq \sigma'(w_j^\top x)\cdot(\Delta w_j)^\top x = -\eta\,r\,m^{-c}\,a_j\,[\sigma'(w_j^\top x)]^2\,\|x\|^2.
+\]
+
+对输出的影响（\textbf{精确计算}）：
+\begin{align}
+\Delta f\big|_w &= m^{-c}\sum_{j=1}^m a_j\cdot\Delta h_j = m^{-c}\sum_j a_j\cdot\big[-\eta\,r\,m^{-c}\,a_j\,[\sigma']^2\,\|x\|^2\big] \\
+&= -\eta\,r\,\|x\|^2\,m^{-2c}\sum_{j=1}^m a_j^2\,[\sigma'(w_j^\top x)]^2.
+\end{align}
+
+$a_j^2$的期望$=m^{-2a}$，$[\sigma']^2$的期望$=\dot C_\sigma=O(1)$。由LLN：$\frac{1}{m}\sum_j a_j^2[\sigma']^2\to m^{-2a}\dot C_\sigma$。
+
+\[
+\boxed{\Delta f\big|_w = -\eta\,r\,\|x\|^2\,\dot C_\sigma\,m^{1-2a-2c} + O(m^{1/2-2a-2c}).}
+\]
+
+不发散要求$1-2a-2c\le 0$，即$a+c\ge 1/2$——和约束1相同。
+
+\bigskip
+\textbf{关键一步：谁对输出变化的贡献更大？}
+
+现在我们有两个贡献：
+\begin{align}
+\Delta f\big|_a &= O(\eta_a\,m^{1-2c}), \qquad \text{（输出层权重$a_j$的调整）} \\
+\Delta f\big|_w &= O(\eta_w\,m^{1-2a-2c}). \qquad \text{（隐藏层特征$h_j$的变化）}
+\end{align}
+
+\textbf{注意：这里显式写出了$\eta_a$和$\eta_w$。} 在上面的abc分析中我们假设了统一学习率$\eta_a=\eta_w=\eta$，但这\textbf{不是唯一的选择}——$\mu$P的核心正是在于分层设置学习率。
+
+它们的比值（\textbf{包含学习率}）：
+\[
+\boxed{\frac{\Delta f|_w}{\Delta f|_a} = \frac{\eta_w}{\eta_a}\cdot m^{-2a}.}
+\]
+
+\textbf{这个比值决定了feature learning的强度。} 要使特征更新（$\Delta f|_w$）和readout更新（$\Delta f|_a$）\textbf{同阶}——即比值$=O(1)$——需要：
+\[
+\frac{\eta_w}{\eta_a} = O(m^{2a}).
+\]
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{统一学习率$\eta_w=\eta_a$时：}比值$=O(m^{-2a})$。只有$a=0$时比值$=O(1)$；$a>0$时比值$\to 0$（lazy regime）。
+\item \textbf{分层学习率时：}即使$a>0$，也可以通过设$\eta_w/\eta_a = O(m^{2a})$来\textbf{人为拉回}比值到$O(1)$。
+\end{itemize}
+
+\textbf{（提问学生：这说明什么？——feature learning不仅取决于初始化缩放$(a,c)$，还取决于学习率缩放$\eta_w/\eta_a$。$\mu$P是初始化和学习率的\textbf{联合设计}。）}
+
+\bigskip
+\textbf{从abc到$\mu$P：需要两个独立的设计选择。}
+
+\textbf{设计选择1：初始化$(a,b,c)$。}
+
+约束$a+c\ge 1/2$（输出不发散），$c\ge 1/2$（更新不发散）。
+
+饱和条件$a+c=1/2$保证$\Delta f$不趋于零（``maximal update''）。
+
+\textbf{设计选择2：学习率缩放$\eta_w/\eta_a$。}
+
+选择$\eta_w/\eta_a$使得$\frac{\Delta f|_w}{\Delta f|_a}=O(1)$，即特征更新和readout更新同阶。
+
+\begin{tcolorbox}[colback=red!5,colframe=red!60!black,title=\textbf{$\mu$P的精确定义}]
+$\mu$P是在所有使$m\to\infty$极限非退化的参数化中，使\textbf{特征更新与readout更新同阶}（$\Delta f|_w / \Delta f|_a = O(1)$）的参数化。
+
+这需要初始化和学习率的\textbf{联合设计}：
+
+\medskip
+\textbf{标准选择}（Yang \& Hu, 2021）：取$a=0, b=0, c=1/2$（与NTK参数化的初始化\textbf{形式相同}），\textbf{加上}分层学习率$\eta_w = \eta/m$，$\eta_a = \eta$。
+\end{tcolorbox}
+
+\begin{remark}{$\mu$P $\neq$ NTK，即使$(a,c)$相同！}{mup-neq-ntk}
+这是一个\textbf{极易混淆}的地方。NTK参数化和$\mu$P的abc标准选择都是$(a,c)=(0,1/2)$，初始化形式完全一样：$f=\frac{1}{\sqrt{m}}\sum a_j\sigma(w_j^\top x)$，$a_j\sim\cN(0,1)$。
+
+\textbf{但训练动态完全不同！}区别在于学习率：
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{l|cc}
+\toprule
+& NTK参数化 & $\mu$P \\
+\midrule
+初始化$(a,c)$ & $(0,\;1/2)$ & $(0,\;1/2)$ ——\textbf{相同} \\
+隐藏层$\eta_w$ & $\eta$ & $\eta/m$ ——\textbf{不同！} \\
+$\Delta f|_w/\Delta f|_a$ & $O(1)$ & $O(1)$ \\
+\textbf{但}隐藏层参数变化$|\Delta w_j|$ & $O(1/\sqrt{m})$ & $O(1/m^2)$（单步） \\
+NTK漂移 & $O(1/\sqrt{m})\to 0$（冻结） & $O(1)$（漂移） \\
+Feature learning & \textbf{无}（$m\to\infty$下） & \textbf{有} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{为什么统一$\eta$的NTK没有feature learning，但比值$\Delta f|_w/\Delta f|_a$也是$O(1)$？}
+
+答案是微妙的：在NTK参数化下，$\Delta f|_w$和$\Delta f|_a$\textbf{都是$O(1)$}，比值是$O(1)$。但$\Delta f|_w$的$O(1)$来自$m$个神经元的\textbf{不协调的}$O(1/\sqrt{m})$微小变化汇聚（CLT），这些变化在$m\to\infty$下消失——对应NTK的核冻结。
+
+在$\mu$P下，虽然单步更新更小，但经过$O(m)$步累积后，$m$个神经元的变化是\textbf{协调的}（由梯度驱动的确定性方向），产生了$O(1)$的经验分布变化——这才是真正的feature learning。
+
+\textbf{一句话：}NTK和$\mu$P的区别不在初始化，在\textbf{学习率缩放}。初始化决定了起点，学习率决定了训练中走多远、往哪走。
+\end{remark}
+
+\bigskip
+\textbf{实际$\mu$P的等价写法。}
+
+上面用abc形式+分层学习率来描述$\mu$P。实践中更常见的是把学习率缩放\textbf{吸收进}输出缩放中，得到等价但更简洁的写法：
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{l|cc}
+\toprule
+& abc形式+分层$\eta$ & 等价的实际$\mu$P \\
+\midrule
+网络 & $f=\frac{1}{\sqrt{m}}\sum a_j\sigma(w_j^\top x)$ & $f=\frac{1}{m}\sum a_j\sigma(w_j^\top x)$ \\
+隐藏层学习率 & $\eta/m$ & $\eta/m$ \\
+输出层学习率 & $\eta$ & $\eta$ \\
+初始化 & $\cN(0,1)$ & $\cN(0,1)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+两种写法的训练动力学完全等价（差一个重新参数化$\tilde a_j = a_j/\sqrt{m}$）。实际$\mu$P的``$1/m$输出缩放+$\eta/m$隐藏层学习率''形式更容易推广到多层，也更容易在PyTorch中实现。
+
+\medskip
+\textbf{（板书小结：}$(a,c)$平面上画可行域和$\mu$P点。\textbf{）}
+
+\begin{center}
+\begin{tikzpicture}[scale=2.5]
+\draw[->] (-0.1,0) -- (1.2,0) node[right] {$a$};
+\draw[->] (0,-0.1) -- (0,1.2) node[above] {$c$};
+% Feasible region
+\fill[blue!8] (0,0.5) -- (0,1.2) -- (1.2,1.2) -- (1.2,0) -- (0.5,0) -- cycle;
+% Boundary a+c=1/2
+\draw[thick,red] (0,0.5) -- (0.5,0) node[below right,font=\small] {$a+c=1/2$};
+% c=1/2 line
+\draw[dashed,gray] (0,0.5) -- (1.2,0.5) node[right,font=\tiny] {$c=1/2$};
+% muP point
+\fill[red] (0,0.5) circle (1.5pt) node[above right,font=\small] {$\mu$P：$(0,\frac{1}{2})$};
+% NTK region
+\node[font=\tiny,blue!60!black] at (0.6,0.8) {lazy regime};
+\node[font=\tiny,blue!60!black] at (0.6,0.7) {$a+c>1/2$};
+% Arrow
+\draw[->,thick,red] (0.3,0.35) -- (0.05,0.48);
+\node[font=\tiny,red] at (0.45,0.3) {特征更新与readout同阶};
+\end{tikzpicture}
+\end{center}
+\end{handcalc}
+
+\begin{classexercise}{5：验证不同参数化的$(a,b,c)$（5分钟）}
+\begin{enumerate}[label=(\alph*)]
+\item NTK参数化$f=\frac{1}{\sqrt{m}}\sum a_j\sigma(w_j^\top x)$，$a_j\sim\cN(0,1)$，$w_j\sim\cN(0,I)$。$(a,b,c)=?$ $a+c=?$
+\item 标准参数化（Kaiming）$f=\sum a_j\sigma(w_j^\top x)$，$a_j\sim\cN(0,1/m)$，$w_j\sim\cN(0,1/d\cdot I)$。$(a,b,c)=?$ $a+c=?$
+\item 你自己发明一个$a+c>1/2$的参数化和一个$a+c<1/2$的参数化。它们分别会怎样？
+\end{enumerate}
+
+\textbf{答案：}
+
+(a) $a=0,b=0,c=1/2$。$a+c=1/2$（边界）。用统一$\eta$时，$\Delta f|_w/\Delta f|_a=(\eta_w/\eta_a)\cdot m^0 = 1$，看似两者同阶。但这就是NTK参数化——统一$\eta$下$|\Delta w_j|=O(1/\sqrt{m})\to 0$，核冻结，\textbf{没有}feature learning！要获得真正的feature learning需要额外设$\eta_w=\eta/m$，即$\mu$P。
+
+(b) $a=1/2$（因为$\text{Var}[a_j]=1/m=m^{-2\times 1/2}$），$c=0$。$a+c=1/2$（也在边界）。统一$\eta$下$\Delta f|_w/\Delta f|_a=O(m^{-1})\to 0$——feature learning更弱。但如果设$\eta_w/\eta_a=O(m)$可以拉回$O(1)$。
+
+(c) 比如$a=1,c=0$：$a+c=1>1/2$，$\Delta f\to 0$（lazy）；$a=0,c=0$：$a+c=0<1/2$，输出发散。
+\end{classexercise}
+
+%=============================================================================
+\section{核心对比：NTK vs $\mu$P下的更新量级}
+%=============================================================================
+
+\begin{handcalc}{7：同一个网络，两种参数化的逐步对比（课堂核心，约25分钟）}
+
+\textbf{设置。} 两层ReLU网络，$m$个隐藏神经元，标量输入$d=1$。初始化$a_j\sim\cN(0,1)$，$w_j\sim\cN(0,1)$。
+
+单个训练点$(x,y)=(1,0)$，MSE损失。
+
+\textbf{建议：分学生为两组，NTK组和$\mu$P组，各自计算后填入同一张大表。}
+
+\tcblower
+
+\textbf{NTK参数化：}$f_{\text{NTK}}(x) = \frac{1}{\sqrt{m}}\sum_{j=1}^m a_j\,\text{ReLU}(w_j x)$。所有参数学习率$\eta$。
+
+\textbf{$\mu$P：}$f_{\mu P}(x) = \frac{1}{m}\sum_{j=1}^m a_j\,\text{ReLU}(w_j x)$。$a_j$学习率$\eta$，$w_j$学习率$\eta/m$。
+
+\bigskip
+\textbf{第1步：初始输出。}
+
+NTK：$f = \frac{1}{\sqrt{m}}\sum_j a_j h_j$。$a_j h_j$是i.i.d.的，均值0，方差$\E[a^2]\E[h^2]=1\times\frac{1}{2}=\frac{1}{2}$（$\E[\text{ReLU}(w)^2]=1/2$对$w\sim\cN(0,1)$）。$m$项和的标准差$=\sqrt{m/2}$。乘以$1/\sqrt{m}$：$f = O(1)$。
+
+$\mu$P：同样的和，乘以$1/m$：$f = O(\sqrt{m/2}/m) = O(1/\sqrt{m}) \to 0$。
+
+\textbf{（代入$m=100$：NTK下$f\approx\pm 0.7$，$\mu$P下$f\approx\pm 0.07$。）}
+
+\bigskip
+\textbf{第2步：对$a_j$的梯度和更新。}
+
+NTK：$\frac{\partial f}{\partial a_j} = \frac{h_j}{\sqrt{m}}$，其中$h_j=\text{ReLU}(w_j)$。$|h_j|=O(1)$，所以$|\partial f/\partial a_j|=O(1/\sqrt{m})$。
+
+$\frac{\partial L}{\partial a_j} = (f-y)\cdot\frac{h_j}{\sqrt{m}} = O(1)\cdot O(1/\sqrt{m}) = O(1/\sqrt{m})$。
+
+$\Delta a_j = -\eta\cdot O(1/\sqrt{m}) = O(\eta/\sqrt{m})$。
+
+\medskip
+$\mu$P：$\frac{\partial f}{\partial a_j} = \frac{h_j}{m} = O(1/m)$。
+
+$\mu$P下$f=O(1/\sqrt{m})\to 0$，所以$|f-y|=|O(1/\sqrt{m})-0|=O(1/\sqrt{m})$（比NTK小$\sqrt{m}$倍）。
+
+$\frac{\partial L}{\partial a_j} = O(1/\sqrt{m})\cdot O(1/m) = O(1/(m\sqrt{m}))$。
+
+$\Delta a_j = -\eta\cdot O(1/(m\sqrt{m})) = O(\eta/(m\sqrt{m}))$。
+
+\textbf{（$m=100$：NTK下$\Delta a_j\sim 0.01\eta$，$\mu$P下$\Delta a_j\sim 10^{-4}\eta$。$\mu$P的单步更新确实小得多——但$\mu$P需要$O(m)$步才能让$f$变化$O(1)$，见下面第5步。）}
+
+\bigskip
+\textbf{第3步：对$w_j$的梯度和更新。}
+
+NTK：$\frac{\partial f}{\partial w_j} = \frac{a_j\mathbf{1}_{w_j>0}\cdot x}{\sqrt{m}} = O(1/\sqrt{m})$。
+
+$\Delta w_j = -\eta\cdot(f-y)\cdot O(1/\sqrt{m}) = O(\eta/\sqrt{m})$。
+
+\medskip
+$\mu$P：$\frac{\partial f}{\partial w_j} = \frac{a_j\mathbf{1}\cdot x}{m} = O(1/m)$。
+
+$\Delta w_j = -\frac{\eta}{m}\cdot O(1/\sqrt{m})\cdot O(1/m) = O(\eta/(m^2\sqrt{m}))$。
+
+\bigskip
+\textbf{第4步：单步$\Delta f$。}
+
+NTK：用动力学方程$\Delta f = -\eta\Theta(x,x)(f-y)$。$\Theta(x,x)=O(1)$（手算2--4已验证），$|f-y|=O(1)$。所以$\Delta f_{\text{NTK}} = O(\eta)$。
+
+$\mu$P：NTK的量级为$\Theta_{\mu P}(x,x)=\sum_p(\partial f/\partial\theta_p)^2$。$|\partial f/\partial a_j|=O(1/m)$共$m$项，贡献$m\cdot O(1/m^2)=O(1/m)$；$|\partial f/\partial w_j|=O(1/m)$共$m$项，贡献$O(1/m)$。合计$\Theta_{\mu P}=O(1/m)$。
+
+但$\mu$P有逐层学习率，不能直接用$\Delta f=-\eta\Theta(f-y)$。需要分别算$a_j$和$w_j$的贡献，再加上$|f-y|=O(1/\sqrt{m})$：
+\[
+\Delta f_{\mu P} = O(\eta/m) + O(\eta/m^2) = O(\eta/m).
+\]
+
+\textbf{$\mu$P的单步$\Delta f$比NTK小$m$倍。}这不是问题——$\mu$P需要$O(m)$步累积到$O(1)$。
+
+\bigskip
+\textbf{统一分析框架：}定义``宏观时间''$\tau$使得$\Delta f$累积到$O(1)$。
+
+NTK：单步$\Delta f=O(\eta)$，所以$O(1)$步即达到$O(1)$变化。宏观时间$\tau = t$。
+
+$\mu$P：单步$\Delta f=O(\eta/m)$，需要$O(m)$步累积到$O(1)$。宏观时间$\tau = t/m$。
+
+\bigskip
+\textbf{第5步：宏观时间$\tau=1$后的累积（$m$步 for $\mu$P，1步 for NTK）。}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{>{\raggedright}p{4.5cm}|c|c}
+\toprule
+\textbf{量} & \textbf{NTK}（1步，$\eta$ for all） & \textbf{$\mu$P}（$m$步，$\eta_a=\eta,\eta_w=\eta/m$） \\
+\midrule
+初始$f$ & $O(1)$ & $O(1/\sqrt{m})\to 0$ \\
+\hline
+单步$|\Delta a_j|$ & $O(\eta/\sqrt{m})$ & $O(\eta/(m\sqrt{m}))$ \\
+$m$步累积$|\Delta a_j|$ & $O(\eta\sqrt{m})$（不适用） & $O(\eta/\sqrt{m})$ \\
+\hline
+单步$|\Delta w_j|$ & $O(\eta/\sqrt{m})$ & $O(\eta/(m^2\sqrt{m}))$ \\
+$m$步累积$|\Delta w_j|$ & --- & $O(\eta/(m\sqrt{m}))$ \\
+\hline
+累积$\Delta f$ & $O(\eta)$ & $O(\eta)$ \\
+\hline
+\rowcolor{yellow!20}
+\textbf{单个$w_j$的变化} & $O(1/\sqrt{m})$ & $O(1/m)$（更小） \\
+\hline
+\rowcolor{yellow!20}
+\textbf{$\{w_j\}$经验分布变化} & $W_2=O(1/\sqrt{m})\to 0$ & $W_2$可达$O(1)$（协调运动） \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\bigskip
+\textbf{最后两行是关键！}
+
+\textbf{NTK：}每个$w_j$动了$O(1/\sqrt{m})$。$h_j=\text{ReLU}(w_j x)$变化$O(1/\sqrt{m})\to 0$。特征冻结。
+
+\textbf{$\mu$P：}每个$w_j$只动了$O(1/m)$——比NTK\textbf{更小}！但为什么说特征变化$O(1)$？
+
+关键在于$\mu$P的输出缩放是$1/m$，不是$1/\sqrt{m}$。这意味着每个神经元对输出的``权重''从$O(1/\sqrt{m})$变成了$O(1/m)$。在这个缩放下，$m$个$O(1/m)$量级的变化通过$1/m$前缩放汇聚后，对输出的\textbf{分辨率}是$O(1)$的。
+
+更精确地说：$\{w_j\}_{j=1}^m$的经验分布$\hat\mu_m=\frac{1}{m}\sum_j\delta_{w_j}$在Wasserstein-2距离下变化$O(1)$。每只蚂蚁只走了$O(1/m)$步，但$m$只蚂蚁的``群体形状''发生了$O(1)$的重组。
+\end{handcalc}
+
+\begin{handcalc}{8：具体数字演示（$m=100$，约8分钟）}
+
+$m=100, \eta=0.1$，某个神经元$j$：$a_j=1, w_j=0.5, x=1$，$h_j=\text{ReLU}(0.5)=0.5$。
+
+假设$(f-y)=0.5$（NTK下）或$(f-y)=0.05$（$\mu$P下，因为$f=O(1/\sqrt{m})$）。
+
+\tcblower
+
+\textbf{NTK参数化：}
+
+$\frac{\partial f}{\partial a_j} = h_j/\sqrt{m} = 0.5/10 = 0.05$。
+
+$\frac{\partial L}{\partial a_j} = 0.5\times 0.05 = 0.025$。
+
+$\Delta a_j = -0.1\times 0.025 = -0.0025$。
+
+$\frac{\partial f}{\partial w_j} = a_j\cdot 1\cdot x/\sqrt{m} = 1\times 1\times 1/10 = 0.1$。
+
+$\Delta w_j = -0.1\times 0.5\times 0.1 = -0.005$。
+
+隐藏层输出变化：$\Delta h_j = 1\cdot\Delta w_j\cdot x = -0.005$。
+
+$h_j$从$0.5$变到$0.495$。变化率$1\%$。
+
+\bigskip
+\textbf{$\mu$P：}
+
+$\frac{\partial f}{\partial a_j} = h_j/m = 0.5/100 = 0.005$。
+
+$\frac{\partial L}{\partial a_j} = 0.05\times 0.005 = 0.00025$。
+
+$\Delta a_j = -0.1\times 0.00025 = -0.000025$。
+
+$\frac{\partial f}{\partial w_j} = a_j\cdot 1\cdot x/m = 0.01$。
+
+$\eta_w = \eta/m = 0.001$。
+
+$\Delta w_j = -0.001\times 0.05\times 0.01 = -5\times 10^{-7}$。
+
+$\Delta h_j = -5\times 10^{-7}$。$h_j$变化率$10^{-4}\%$。
+
+\bigskip
+\textbf{经过$m=100$步后：}
+
+NTK：$w_j\approx 0.5-100\times 0.005 = 0$。$h_j = \text{ReLU}(0) = 0$。这个神经元几乎``死了''！但$h_j$的绝对变化$=0.5$，量级$O(1)$？不，初始$h_j=0.5$，变化$=0.5$，\textbf{相对}变化$100\%$。但这只是因为$m=100$还不够大。如果$m=10^6$，$\Delta w_j\sim 5\times 10^{-5}$，100步后$w_j$几乎不变。
+
+$\mu$P：$w_j\approx 0.5 - 100\times 5\times 10^{-7} = 0.49995$。几乎没动。但100个这样的微小变化通过$1/m$权重汇聚，产生$O(1)$的输出变化。
+
+\textbf{（板书小结：NTK下特征变化$0.5\to 0$（大变化但$m$大时变小）；$\mu$P下特征变化$0.5\to 0.49995$（小变化但集体效应大）。）}
+\end{handcalc}
+
+\begin{classexercise}{6：感受$\mu$P的``蚂蚁群''效应（8分钟）}
+$m=1000$，所有$w_j$初始均匀分布在$[-2,2]$上。$\mu$P下每个$w_j$向右移动$\Delta w_j = 0.001$（简化假设）。
+\begin{enumerate}[label=(\alph*)]
+\item 画出$\{w_j\}$的经验分布在移动前后的直方图。形状变了吗？
+\item 如果$\Delta w_j$不是常数而是$\Delta w_j = 0.001\cdot\text{sign}(w_j)$（符号相关），画直方图。
+\item 解释为什么(b)的特征变化比(a)``更有意义''。
+\end{enumerate}
+
+\textbf{要点：}(a)整体平移，形状不变——不算真正的feature learning。(b)正$w$向右、负$w$向左，分布``展开''——这才是数据驱动的特征重组。$\mu$P下的梯度使$\Delta w_j$依赖于训练数据，所以实际的分布变化是有结构的、任务相关的。
+\end{classexercise}
+
+%=============================================================================
+\section{超参数迁移}
+%=============================================================================
+
+\begin{theorem}{$\mu$P超参数迁移 (Yang et al., 2022)}{transfer}
+在$\mu$P参数化下，对任意宽度$m$和$m'$，最优学习率
+\[
+\eta^*(m) = \eta^*(m').
+\]
+更一般地，最优超参数（学习率、初始化方差、嵌入层乘数等）在不同宽度之间可迁移。
+\end{theorem}
+
+\begin{keyinsight}[——为什么迁移成立]
+$\mu$P下所有信号量级都不依赖$m$（在宏观时间尺度上）：激活$O(1)$、梯度$O(1)$（重新标度后）、输出变化$O(1)$。动力学的``量纲''与$m$无关$\Rightarrow$最优超参数与$m$无关。
+
+NTK/SP下不成立：隐藏层更新量$O(1/\sqrt{m})$，动力学随$m$变化，最优$\eta^*$也随$m$漂移。
+\end{keyinsight}
+
+\begin{handcalc}{9：学习率曲线对比（板书数值演示，约10分钟）}
+
+\textbf{思想实验：}两层ReLU网络在MNIST子集上训练100步，扫描$\eta$。
+
+\tcblower
+
+\textbf{标准参数化（PyTorch默认Kaiming init + Adam with uniform $\eta$）：}
+
+\begin{center}
+\begin{tabular}{c|ccccc}
+\toprule
+宽度$m$ & $\eta=10^{-4}$ & $10^{-3}$ & $10^{-2}$ & $10^{-1}$ & $1$ \\
+\midrule
+$m=64$ & 2.1 & 1.5 & \cellcolor{yellow!30}\textbf{0.3} & 发散 & 发散 \\
+$m=256$ & 2.2 & 1.8 & 0.8 & \cellcolor{yellow!30}\textbf{0.2} & 发散 \\
+$m=1024$ & 2.3 & 1.9 & 1.2 & 0.5 & \cellcolor{yellow!30}\textbf{0.15} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+最优$\eta^*$：$m=64$时$10^{-2}$，$m=256$时$10^{-1}$，$m=1024$时$1$。\textbf{向右漂移了两个数量级！}
+
+如果把$m=64$上调好的$\eta^*=0.01$直接用到$m=1024$：loss $= 1.2$（对比最优0.15），\textbf{次优8倍}。
+
+\bigskip
+\textbf{$\mu$P：}
+
+\begin{center}
+\begin{tabular}{c|ccccc}
+\toprule
+宽度$m$ & $\eta=10^{-4}$ & $10^{-3}$ & $10^{-2}$ & $10^{-1}$ & $1$ \\
+\midrule
+$m=64$ & 2.0 & 1.4 & \cellcolor{green!20}\textbf{0.25} & 发散 & 发散 \\
+$m=256$ & 2.0 & 1.3 & \cellcolor{green!20}\textbf{0.22} & 发散 & 发散 \\
+$m=1024$ & 2.0 & 1.3 & \cellcolor{green!20}\textbf{0.18} & 发散 & 发散 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+最优$\eta^*$始终在$10^{-2}$！三条$L(\eta)$曲线几乎重合。
+
+\textbf{（板书：并排画两组$L(\eta)$曲线。SP的三条曲线谷底位置不同；$\mu$P的三条曲线重合。）}
+
+\bigskip
+\textbf{$\mu$Transfer的工作流：}
+\begin{enumerate}[leftmargin=*]
+\item 在$m=64$（40M参数）的代理模型上，用8个学习率跑网格搜索。成本：8次小训练。
+\item 找到$\eta^*=0.01$。
+\item 直接用$\eta=0.01$训练$m=8192$（6.7B参数）的大模型。\textbf{不做任何额外搜索。}
+\item 节省的成本：避免了在大模型上的网格搜索（可能需要数百万美元）。
+\end{enumerate}
+\end{handcalc}
+
+\begin{classexercise}{7：$\mu$Transfer工作流设计（10分钟，小组讨论）}
+你的团队要训练$d_{\text{model}}=8192$的Transformer。
+\begin{enumerate}[label=(\alph*)]
+\item 代理模型多大？（$d=256$约40M，单卡A100可跑。）
+\item 搜索哪些超参数？（$\eta$，$\alpha_{\text{emb}}$，$\alpha_{\text{out}}$，$\sigma_{\text{init}}$。）
+\item 代码改什么？（见下节修改清单。）
+\item $\mu$P不能迁移什么？（Batch size、训练步数、\textbf{层数}。）
+\item 你如何验证迁移是否有效？（在两个中等宽度$d=512,1024$上分别搜索和迁移，对比差异。）
+\end{enumerate}
+\end{classexercise}
+
+%=============================================================================
+\section{Transformer的$\mu$P修改}
+%=============================================================================
+
+\begin{handcalc}{10：注意力缩放$1/\sqrt{d}$ vs $1/d$——完整数值演示（约12分钟）}
+
+考虑单头注意力的一个score：$s=q^\top k/\alpha$，$q,k\in\R^{d_{\text{head}}}$。
+
+初始化$q_i,k_i\sim\cN(0,1)$独立。
+
+\tcblower
+
+\textbf{初始score的分布。}
+
+$q^\top k = \sum_{i=1}^{d_{\text{head}}} q_i k_i$。每项均值0，方差$\E[q_i^2 k_i^2]=\E[q_i^2]\E[k_i^2]=1$。
+
+$d_{\text{head}}$项独立和：$q^\top k\sim\cN(0, d_{\text{head}})$（近似）。
+
+标准差$=\sqrt{d_{\text{head}}}$。
+
+\medskip
+\textbf{标准缩放$\alpha=\sqrt{d_{\text{head}}}$：}
+
+$s = q^\top k/\sqrt{d_{\text{head}}}$。$s\sim\cN(0,1)$。
+
+Softmax作用在$O(1)$的logits上$\Rightarrow$非均匀的注意力分布。
+
+\medskip
+\textbf{$\mu$P缩放$\alpha=d_{\text{head}}$：}
+
+$s = q^\top k/d_{\text{head}}$。$s\sim\cN(0, 1/d_{\text{head}})$。标准差$=1/\sqrt{d_{\text{head}}}$。
+
+$d_{\text{head}}=64$时：$s\sim\cN(0, 1/64)$，标准差$=0.125$。
+
+Softmax作用在$\approx 0$的logits上$\Rightarrow$近似均匀分布。
+
+\bigskip
+\textbf{训练一步后的变化。}
+
+设$q$和$k$各自有$O(1)$的更新（$\mu$P下在宏观时间尺度上）。
+
+$\Delta(q^\top k) = \Delta q^\top k + q^\top\Delta k + \Delta q^\top\Delta k$。
+
+$|\Delta q^\top k|\sim\sqrt{d_{\text{head}}}\cdot O(1) = O(\sqrt{d_{\text{head}}})$（$d_{\text{head}}$个$O(1)$项之和）。
+
+同理$|q^\top\Delta k| = O(\sqrt{d_{\text{head}}})$。$|\Delta q^\top\Delta k|=O(\sqrt{d_{\text{head}}})$。
+
+总计$|\Delta(q^\top k)| = O(\sqrt{d_{\text{head}}})$。
+
+\medskip
+\textbf{标准缩放：}$|\Delta s| = O(\sqrt{d_{\text{head}}})/\sqrt{d_{\text{head}}} = O(1)$。
+
+$|\Delta s|/|s| = O(1)/O(1) = O(1)$。\textbf{一步就让score变化100\%！}
+
+$d_{\text{head}}=64$：$|s|\approx 1$，$|\Delta s|\approx 1$。注意力模式完全重组。
+
+在$d_{\text{head}}\to\infty$下这意味着动力学\textbf{不收敛}到确定性极限。
+
+\medskip
+\textbf{$\mu$P缩放：}$|\Delta s| = O(\sqrt{d_{\text{head}}})/d_{\text{head}} = O(1/\sqrt{d_{\text{head}}})$。
+
+$d_{\text{head}}=64$：$|s|\approx 0.125$，$|\Delta s|\approx 0.125$。虽然相对变化看似$100\%$，但softmax在$s\approx 0$附近是\textbf{平坦}的（接近均匀分布），小的$\Delta s$不会引起注意力分布的大变化。注意力模式的实际变化很温和。
+
+经过$O(\sqrt{d_{\text{head}}})\approx 8$步后，score累积到$|s|\approx 1$，softmax开始``锐化''。
+
+$d_{\text{head}}=64$：
+\begin{center}
+\begin{tabular}{c|cc}
+\toprule
+步数 & 标准缩放$|s|$ & $\mu$P缩放$|s|$ \\
+\midrule
+0 & $\sim 1$ & $\sim 0.125$ \\
+1 & $\sim 2$（剧变） & $\sim 0.25$ \\
+4 & $\sim 5$（饱和） & $\sim 0.5$ \\
+8 & --- & $\sim 1$（开始锐化） \\
+64 & --- & $\sim 8$（锐化完成） \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{$\mu$P的注意力``慢启动''：}初始均匀$\to$逐渐发现``该看哪里''$\to$锐化。这就是注意力层的feature learning！
+\end{handcalc}
+
+\subsection{完整修改清单}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{l|l|l}
+\toprule
+\textbf{组件} & \textbf{标准参数化} & \textbf{$\mu$P} \\
+\midrule
+注意力缩放 & $\text{softmax}(QK^\top/\sqrt{d_{\text{head}}})V$ & $\text{softmax}(QK^\top/d_{\text{head}})V$ \\
+嵌入层 & $h_0 = E[x]$ & $h_0 = \alpha_{\text{emb}}\cdot E[x]$，$\alpha_{\text{emb}}$可调 \\
+输出层 & $\frac{1}{\sqrt{d_{\text{model}}}}W_{\text{out}}h$ & $\frac{1}{d_{\text{model}}}W_{\text{out}}h$ \\
+隐藏层学习率 & $\eta$ & $\eta/d_{\text{model}}$ \\
+输出层学习率 & $\eta$ & $\eta$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{remark}{实践简化}{practice}
+很多团队只改注意力缩放$1/\sqrt{d}\to 1/d$和输出层缩放就获得大部分收益。完整$\mu$P可用\texttt{mup} Python包。Cerebras-GPT (2023)在111M--13B参数系列中成功使用了$\mu$P。
+\end{remark}
+
+\subsection{$\mu$P在视觉模型上的进展}
+
+$\mu$P最初在语言模型上验证，但最近已扩展到视觉领域。这一小节基于几篇关键文献。
+
+\textbf{（一）ResNet：原始$\mu$P论文已覆盖。}
+
+Yang et al. (2022)的官方\texttt{mup}库已包含ResNet的示例实现。对CNN，``宽度''$m$对应\textbf{通道数}$C$。$\mu$P的修改规则与全连接网络一致：输出层缩放$1/C$（而非$1/\sqrt{C}$），隐藏层学习率$\eta/C$。coord check验证通过。
+
+但CNN有一个特殊性：卷积层的参数共享（同一个$3\times 3$滤波器在所有空间位置重复使用）使得``宽度$\to\infty$''的含义与全连接网络不同——只有通道维度趋于无穷，空间维度固定。Tensor Programs框架可以处理这一点，但实践中CNN的通道数通常较小（$C\le 2048$），finite-width效应更显著，$\mu$P的收益不如Transformer明显。
+
+\medskip
+\textbf{（二）ViT（Vision Transformer）：直接套用语言模型的$\mu$P。}
+
+ViT把图像切成patch，每个patch当作一个token，然后用标准Transformer处理。因此ViT的$\mu$P和语言Transformer\textbf{完全一样}：注意力缩放$1/d_{\text{head}}$，输出层$1/d_{\text{model}}$，隐藏层$\eta/d_{\text{model}}$。
+
+有一个注意点（Stevens, 2024的实践报告）：ViT的\textbf{patch embedding层}的输入维度$d_{\text{in}} = \text{patch\_size}^2\times 3$是固定的（不随模型宽度变化），所以这一层\textbf{不需要}$\mu$P的学习率缩放。只有隐藏层（$d_{\text{in}}$随$d_{\text{model}}$变化的层）才需要。这是视觉模型特有的细节。
+
+\medskip
+\textbf{（三）Diffusion Transformer：最新进展（Zheng et al., NeurIPS 2025）。}
+
+\begin{tcolorbox}[colback=blue!5,colframe=blue!50!black,title=\textbf{关键论文：Scaling Diffusion Transformers Efficiently via $\mu$P}]
+Zheng et al. (2025)将$\mu$P正式推广到扩散模型的Transformer架构（DiT、U-ViT、PixArt-$\alpha$、MMDiT），并\textbf{严格证明}这些架构的$\mu$P缩放规则与vanilla Transformer一致。
+
+\textbf{核心结论：}
+\begin{itemize}[leftmargin=*]
+\item Diffusion Transformer的$\mu$P与语言Transformer相同——不需要额外推导。
+\item DiT-XL-2在$\mu$P下迁移学习率，收敛速度\textbf{提升2.9倍}。
+\item PixArt-$\alpha$从0.04B扩展到0.61B：$\mu$P超参数迁移只花了一次完整训练的\textbf{5.5\%}计算。
+\item MMDiT从0.18B扩展到\textbf{18B}：$\mu$P仅用人工专家调参成本的\textbf{3\%}。
+\end{itemize}
+
+\textbf{为什么Diffusion Transformer的$\mu$P和语言模型一样？}
+
+关键洞察：扩散模型的训练目标是去噪（预测噪声$\epsilon$或预测$x_0$），虽然和语言模型的next-token prediction不同，但从\textbf{参数化的角度}看，网络的前向传播结构是相同的——都是Transformer层的堆叠。$\mu$P只关心网络的前向/反向传播中各层的\textbf{信号量级}，不关心损失函数的具体形式。所以只要架构是Transformer，$\mu$P的缩放规则就自动适用。
+
+唯一需要额外注意的是：MMDiT（Stable Diffusion 3 / FLUX使用的架构）有双流（text stream和image stream）共享注意力的结构。Zheng et al.证明了双流结构不影响$\mu$P的成立——两个stream的宽度同时趋于无穷时，缩放规则不变。
+\end{tcolorbox}
+
+\textbf{（四）前沿：超越宽度的迁移。}
+
+最新的工作（Blake et al., 2024; Dey et al., 2025）正在推动$\mu$P超越宽度维度：
+\begin{itemize}[leftmargin=*]
+\item \textbf{u-$\mu$P}（Blake et al., 2024）：结合Unit Scaling，让激活值、权重、梯度在训练开始时都是$O(1)$，在FP8低精度下开箱即用。
+\item \textbf{Complete(d)P}（Dey et al., 2025）：将$\mu$P扩展到\textbf{深度方向}（Tensor Programs VI的理论支撑），实现了跨宽度+跨深度+跨batch size+跨训练步数的完整超参数迁移。
+\item \textbf{逐模块超参数}：不再只用一个全局学习率，而是为embedding、attention、FFN、output head分别调参，每个模块的最优值在$\mu$P下也能迁移。
+\end{itemize}
+
+\begin{classexercise}{8：综合辨析（8分钟）}
+\begin{enumerate}[label=(\alph*)]
+\item 为什么$\mu$P的初始输出$f=O(1/\sqrt{m})\to 0$不是问题？（提示：训练$O(m)$步后$f$会长到$O(1)$。）
+\item 你的同事说``Adam已经有自适应学习率了，不需要$\mu$P的逐层缩放''。你怎么回应？（提示：Adam归一化梯度的\textbf{方向}，但不处理层间的\textbf{信号量级}差异。）
+\item 如果你同时改了层数（12$\to$48）和宽度（256$\to$8192），$\mu$P还保证$\eta^*$不变吗？（不，$\mu$P只处理宽度方向。）
+\end{enumerate}
+\end{classexercise}
+
+%=============================================================================
+\section{Tensor Programs框架（概述）}
+%=============================================================================
+
+\begin{teachingtip}
+简要介绍即可。核心信息：$\mu$P不是拍脑袋，有系统推导。
+\end{teachingtip}
+
+Greg Yang的Tensor Programs（TP-I至V，2019--2023）将网络中的向量分为$G$-向量（极限i.i.d.高斯）和$H$-向量（极限确定性分布）。运算规则自动确定极限行为。Master Theorem保证极限存在并可精确计算。$\mu$P的缩放规则是Master Theorem的推论。
+
+%=============================================================================
+\section{参数化族全景图}
+%=============================================================================
+
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{l|cccc}
+\toprule
+& SP (PyTorch) & NTK & Mean Field & $\mu$P \\
+\midrule
+初始化$\sigma_w$ & $1/\sqrt{m}$ & $1$ & $1/\sqrt{m}$ & $1$ \\
+前向缩放 & $1$ & $1/\sqrt{m}$ & $1$ & $1/\sqrt{m}$ \\
+输出缩放 & $1/\sqrt{m}$ & $1/\sqrt{m}$ & $1/m$ & $1/m$ \\
+隐藏层$\eta$ & $\eta$ & $\eta$ & $\eta m$ & $\eta/m$ \\
+参数变化 & 依赖$m$ & $O(1/\sqrt{m})$ & $O(1)$ & $O(1)$ \\
+特征变化 & 依赖$m$ & $\to 0$ & $O(1)$ & $O(1)$ \\
+$m\to\infty$极限 & 不一定存在 & 存在（线性化） & 存在（PDE） & 存在（非线性ODE） \\
+Feature learning & 有限$m$下有 & 无（极限下） & 有 & 有 \\
+超参迁移 & \textbf{不支持} & 不适用 & 未验证 & \textbf{支持} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%=============================================================================
+\section{局限与开放问题}
+%=============================================================================
+
+\begin{enumerate}[leftmargin=*]
+\item \textbf{深度方向：}$\mu$P主要解决宽度缩放。层数不同的模型之间迁移效果差。
+\item \textbf{Batch size/训练步数：}不直接迁移，需额外scaling law。
+\item \textbf{LayerNorm：}改变量级关系，使分析更复杂。Yang等人给出了含LayerNorm的$\mu$P。
+\item \textbf{Adam：}自适应学习率部分冗余于$\mu$P的缩放，但实践中仍有效。
+\item \textbf{与二阶优化器：}$\mu$P处理层间缩放，二阶方法处理层内方向，理论上互补但研究不足。
+\end{enumerate}
+
+%=============================================================================
+\section{扩展阅读：Mean Field理论视角}
+%=============================================================================
+
+\begin{teachingtip}
+这一节是\textbf{选讲/扩展内容}，给有理论兴趣的学生。核心信息：NTK和$\mu$P不是孤立的理论，它们是一个\textbf{更大图景}的两个端点。Mean Field理论提供了连接两者的桥梁。
+\end{teachingtip}
+
+\subsection{从粒子系统的角度看神经网络}
+
+回顾两层$\mu$P网络$f(x)=\frac{1}{m}\sum_{j=1}^m a_j\sigma(w_j^\top x)$。把每个神经元$j$看作一个``粒子''，状态为$\xi_j=(a_j, w_j)\in\R^{d+1}$。网络就是$m$个粒子的\textbf{加权投票}。
+
+训练=移动粒子。梯度下降让每个粒子$\xi_j$沿着梯度方向走一小步：
+\[
+\dot\xi_j = -\nabla_{\xi_j}L = -(f(x)-y)\cdot\frac{1}{m}\nabla_{\xi_j}[a_j\sigma(w_j^\top x)].
+\]
+
+\textbf{关键观察：}每个粒子的运动方程依赖\textbf{所有其他粒子}（通过$f(x)=\frac{1}{m}\sum_k a_k\sigma(w_k^\top x)$）。这是一个\textbf{相互作用的粒子系统}——和物理中的$N$-body问题一模一样。
+
+\subsection{$m\to\infty$：从粒子到分布}
+
+当$m\to\infty$，离散的粒子集$\{\xi_1,\dots,\xi_m\}$用一个\textbf{连续分布}$\mu_t$描述：
+\[
+\hat\mu_m = \frac{1}{m}\sum_{j=1}^m \delta_{\xi_j} \;\xrightarrow{m\to\infty}\; \mu_t \quad\text{（弱收敛）}.
+\]
+
+网络输出变为对分布的积分：$f(x)=\int a\sigma(w^\top x)\,d\mu_t(a,w)$。
+
+训练动力学变为\textbf{粒子分布的演化PDE}：
+\[
+\boxed{\partial_t\mu_t = \nabla\cdot\!\left(\mu_t\,\nabla\frac{\delta L}{\delta\mu}\right).}
+\]
+这就是\textbf{Wasserstein梯度流}（Mei, Montanari \& Nguyen, 2018; Chizat \& Bach, 2018）——在概率分布的空间上做梯度下降。$\frac{\delta L}{\delta\mu}$是损失对分布的变分导数。
+
+\begin{keyinsight}[——Mean Field的物理图像]
+\textbf{NTK视角：}关注\textbf{投票结果}（$n$个训练点上的输出）怎么变——函数空间的ODE。
+
+\textbf{Mean Field视角：}关注\textbf{粒子群的队形}（神经元参数的分布）怎么变——分布空间的PDE。
+
+两者看的是同一个训练过程，只是描述层次不同。
+\end{keyinsight}
+
+\subsection{三种极限的关系}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{l|ccc}
+\toprule
+& \textbf{NTK极限} & \textbf{$\mu$P极限} & \textbf{Mean Field极限} \\
+\midrule
+适用架构 & 任意 & 任意 & \textbf{仅两层} \\
+极限动力学 & 线性ODE & 非线性ODE & Wasserstein梯度流PDE \\
+特征学习 & 无 & 有 & 有 \\
+全局收敛 & 有（线性收敛） & 更难证明 & 有（某些条件下） \\
+数学工具 & 线性代数、核方法 & Tensor Programs & 最优传输、PDE \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{关键关系：}
+\begin{itemize}[leftmargin=*]
+\item 对两层网络，$\mu$P极限和Mean Field极限\textbf{一致}——都描述了特征的非平凡演化。
+\item NTK极限是Mean Field极限的\textbf{线性化近似}：当粒子分布只有$O(1/\sqrt{m})$的小扰动时，Wasserstein梯度流退化为线性核回归。
+\item Mean Field的优势：对两层网络能给出\textbf{全局收敛的严格证明}。
+\item Mean Field的劣势：\textbf{只能处理两层网络}。多层的Mean Field理论是开放问题。$\mu$P通过Tensor Programs可处理任意架构。
+\end{itemize}
+
+\subsection{Wasserstein距离与特征学习的量化}
+
+Mean Field理论给了\textbf{精确量化}feature learning的工具：Wasserstein-2距离$W_2(\mu_0,\mu_T)$度量``把初始队形重组成最终队形，平均每个粒子要走多远''。
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{l|cc}
+\toprule
+& NTK regime & $\mu$P / Mean Field \\
+\midrule
+每个粒子的位移$|\Delta\xi_j|$ & $O(1/\sqrt{m})$ & $O(1/m)$ \\
+$W_2(\mu_0,\mu_T)$ & $O(1/\sqrt{m})\to 0$ & 可达$O(1)$（取决于梯度的协调结构） \\
+解读 & 队形没变（特征冻结） & 队形可发生质变（特征学习） \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{为什么$\mu$P下$W_2$可以是$O(1)$，尽管每个粒子只动了$O(1/m)$？}
+
+关键在于$m$个粒子的位移是\textbf{协调的}（由梯度驱动，方向依赖于训练数据），而不是独立随机的。如果$m$个粒子各自独立随机走$O(1/m)$步，$W_2$仍然$\to 0$；但如果它们的走向有\textbf{系统性结构}（例如正参数的粒子向右、负参数的向左），分布的形状就会发生$O(1)$的变化。
+
+类比：一千个人各走一小步。如果方向随机，队形不变；如果左边的人都向右、右边的人都向左，队形从``两端聚集''变成``中间聚集''——每人走的不远，但分布彻底变了。
+
+$\mu$P保证了这种协调结构的\textbf{存在}（因为梯度有数据驱动的方向），但$W_2$的具体值取决于任务和数据——它不是自动$O(1)$的，而是``可以达到$O(1)$''的。
+
+\subsection{NTK作为Mean Field的线性化}
+
+这个关系可以精确写出。设$\mu_t = \mu_0 + \epsilon\,\nu_t$是初始分布的小扰动（$\epsilon\ll 1$对应NTK的$1/\sqrt{m}$）。将Wasserstein梯度流在$\mu_0$处做一阶Taylor展开：
+\[
+\partial_t\nu_t = -\mathcal{L}_{\mu_0}\,\nu_t + O(\epsilon),
+\]
+其中$\mathcal{L}_{\mu_0}$是一个\textbf{线性算子}，恰好由初始NTK $\Theta^*$确定。忽略$O(\epsilon)$就回到了NTK的线性ODE $\dot\br=-\bTheta^*\br$。
+
+\textbf{所以：NTK动力学是Mean Field梯度流在初始分布附近的线性化极限。}（注意这不是严格的微扰展开——NTK极限和Mean Field极限的取法不同，前者$m\to\infty$后核冻结，后者$m\to\infty$后分布演化。两者的关系是：如果在Mean Field极限中额外要求分布变化很小，就回到了NTK。）当分布变化超出线性化范围（$\mu$P regime），非线性项不可忽略，NTK近似失效，必须用完整的Wasserstein梯度流。
+
+\begin{handcalc}{11：三种regime的数值对比（思想实验，5分钟）}
+$m=1000$个粒子，初始均匀分布在$[-1,1]$上。训练后：
+
+\textbf{NTK regime：}每个粒子走$O(1/\sqrt{m})\approx 0.03$。$W_2\approx 0.03$。分布几乎不变（还是均匀的，只是整体微微平移）。
+
+\textbf{$\mu$P regime：}每个粒子走$O(1/m)=0.001$。但走向有结构：$\xi_j>0$的粒子向右，$\xi_j<0$的向左。分布从$\text{Uniform}[-1,1]$变成了``中间凹、两端凸''的形状。$W_2$远大于单个粒子位移——具体值取决于梯度结构，但关键是$W_2\not\to 0$。
+
+\textbf{发散regime（$a+c<1/2$）：}每个粒子走$O(1)$甚至更大。分布完全重组。但输出$f$也发散了——不是合法的训练。
+
+\tcblower
+\textbf{要点：}$W_2$能看到单个粒子位移看不到的``集体效应''。$\mu$P的精妙之处在于：每个粒子只动了$O(1/m)$（保证极限存在），但$m$个粒子的\textbf{协调运动}可以产生$O(1)$量级的分布重组——具体能否实现取决于任务，但$\mu$P\textbf{不排除}这种可能（而NTK参数化下$W_2\to 0$，feature learning被参数化本身\textbf{禁止}了）。
+\end{handcalc}
+
+%=============================================================================
+\section{本周总结}
+%=============================================================================
+
+\begin{tcolorbox}[colback=yellow!10,colframe=yellow!60!black,title=\textbf{三句话总结}]
+\textbf{1. NTK理论}把infinite-width训练动力学精确映射为线性ODE，给出核回归闭式解和全局收敛保证，但代价是特征冻结（无feature learning），且最优超参数随宽度漂移。
+
+\textbf{2. $\mu$P}通过联合设计输出缩放（$1/\sqrt{m}\to 1/m$）和隐藏层学习率（$\eta\to\eta/m$），使特征更新与readout更新同阶（$\Delta f|_w/\Delta f|_a = O(1)$），从而在infinite-width极限下保留feature learning而不发散。
+
+\textbf{3. 超参数迁移}是$\mu$P的杀手级应用：在小代理模型上搜索最优超参数，直接用于大模型，无需额外调优。
+\end{tcolorbox}
+
+%=============================================================================
+\section*{课后作业}
+%=============================================================================
+
+\begin{enumerate}[leftmargin=*,label=\textbf{题\arabic*.}]
+
+\item \textbf{（手算，必做）} 三层ReLU网络$f(x)=\frac{1}{\sqrt{2}}\bv^\top\sigma\big(\frac{1}{\sqrt{2}}W_2\,\sigma(W_1 x)\big)$，$d=2,m=2$，初始化$W_1=I_2$，$W_2=\begin{pmatrix}1&-1\\-1&1\end{pmatrix}$，$\bv=(1,1)^\top$。输入$x_1=(1,0)^\top, x_2=(0,1)^\top$。
+\begin{enumerate}[label=(\alph*)]
+\item 逐层计算$f(x_1), f(x_2)$。
+\item 对所有10个参数（$W_1$有4个，$W_2$有4个，$\bv$有2个）求偏导，写出$\bJ\in\R^{2\times 10}$。
+\item 计算$\bTheta=\bJ\bJ^\top$并特征分解。
+\item 对$y_1=1,y_2=-1$，用NTK预测$t=5$时的输出$\bu(5)$和损失$L(5)$。
+\end{enumerate}
+
+\item \textbf{（手算+理论，必做）} 对两层网络$f=m^{-c}\sum_j a_j\text{ReLU}(w_j x)$，$a_j\sim\cN(0,m^{-2a})$，$w_j\sim\cN(0,1)$：
+\begin{enumerate}[label=(\alph*)]
+\item 计算$\text{Var}[f(x)]$关于$(a,c,m)$的精确表达式。
+\item 计算$\E[\Theta(x,x)]$关于$(a,c,m)$的表达式。
+\item 分别代入$(a,c)=(0,1/2)$（NTK）和$(a,c)=(0,1)$（$\mu$P风格的两层），验证量级。
+\item 在$(a,c)$平面上画出可行域$\{a+c\ge 1/2, c\ge 1/2\}$，标出NTK点和$\mu$P点。
+\end{enumerate}
+
+\item \textbf{（编程，必做）} PyTorch实验：
+\begin{enumerate}[label=(\alph*)]
+\item 实现两层ReLU网络，分别SP（\texttt{nn.Linear}默认）和$\mu$P（修改输出缩放和学习率）。
+\item MNIST（前1000个样本），宽度$m\in\{64,256,1024,4096\}$，SGD，$\eta\in\{10^{-4},10^{-3.5},\dots,10^{0.5}\}$，训练200步。
+\item 画$L(\eta)$曲线（4条线，对应4个$m$）。SP下最优$\eta^*$漂移了多少？$\mu$P下呢？
+\item 提交代码和$L(\eta)$图。
+\end{enumerate}
+
+\item \textbf{（编程，Bonus）} 在题3基础上，实现2层Transformer（$d_{\text{model}}\in\{32,128,512\}$），分别用$1/\sqrt{d}$和$1/d$注意力缩放，验证$\mu$P下学习率曲线更稳定。
+
+\item \textbf{（思考题）} 你用$\mu$P在$d=256$上调好$\eta^*=0.03$。
+\begin{enumerate}[label=(\alph*)]
+\item 扩到$d=8192$但层数也从12增到48，$\eta^*$还能用吗？设计实验验证。
+\item 有人说``既然$\mu$P让输出初始为0，那前几步训练不是浪费吗？''你怎么反驳？
+\item 提出一种``深度方向的$\mu$P''的可能思路（开放题，无标准答案）。
+\end{enumerate}
+\end{enumerate}
+
+%=============================================================================
+\section*{参考文献}
+%=============================================================================
+
+\begin{enumerate}[leftmargin=*,label={[\arabic*]}]
+\item Jacot, A., Gabriel, F., \& Hongler, C. (2018). Neural Tangent Kernel: Convergence and Generalization in Neural Networks. \textit{NeurIPS}.
+\item Du, S., Zhai, X., Poczos, B., \& Singh, A. (2019). Gradient Descent Provably Optimizes Over-parameterized Neural Networks. \textit{ICLR}.
+\item Allen-Zhu, Z., Li, Y., \& Song, Z. (2019). A Convergence Theory for Deep Learning via Over-Parameterization. \textit{ICML}.
+\item Lee, J., Xiao, L., Schoenholz, S., et al. (2019). Wide Neural Networks of Any Depth Evolve as Linear Models Under Gradient Descent. \textit{NeurIPS}.
+\item Yang, G. \& Hu, E. (2021). Tensor Programs IV: Feature Learning in Infinite-Width Neural Networks. \textit{ICML}.
+\item Yang, G., Hu, E., Babuschkin, I., et al. (2022). Tensor Programs V: Tuning Large Neural Networks via Zero-Shot Hyperparameter Transfer. \textit{NeurIPS}.
+\item Yang, G. (2019--2023). Tensor Programs I--V. \textit{NeurIPS/ICML/arXiv}.
+\item Mei, S., Montanari, A., \& Nguyen, P.-M. (2018). A Mean Field View of the Landscape of Two-layer Neural Networks. \textit{PNAS}.
+\item Chizat, L. \& Bach, F. (2018). On the Global Convergence of Gradient Descent for Over-parameterized Models using Optimal Transport. \textit{NeurIPS}.
+\item Rahaman, N., et al. (2019). On the Spectral Bias of Neural Networks. \textit{ICML}.
+\item Dey, N., et al. (2023). Cerebras-GPT: Open Compute-Optimal Language Models Trained on the Cerebras Wafer-Scale Cluster. \textit{arXiv:2304.03208}.
+\item Bordelon, B. \& Pehlevan, C. (2022). Self-Consistent Dynamical Field Theory of Kernel Evolution in Wide Neural Networks. \textit{NeurIPS}.
+\item Zheng, C., et al. (2025). Scaling Diffusion Transformers Efficiently via $\mu$P. \textit{NeurIPS 2025}.
+\item Blake, C., et al. (2024). u-$\mu$P: The Unit-Scaled Maximal Update Parametrization. \textit{arXiv:2407.17465}.
+\item Dey, N., et al. (2025). Completed Hyperparameter Transfer across Modules, Width, Depth, Batch \& Duration. \textit{arXiv:2512.22382}.
+\end{enumerate}
+
+\end{document}
