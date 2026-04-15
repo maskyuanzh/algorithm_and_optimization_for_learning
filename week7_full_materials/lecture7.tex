@@ -1,0 +1,2092 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[UTF8, fontset=none]{ctex}
+\setCJKmainfont{Noto Serif CJK SC}
+\setCJKsansfont{Noto Sans CJK SC}
+\setCJKmonofont{Noto Sans CJK SC}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tikz}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black}
+
+\lstset{basicstyle=\ttfamily\small, breaklines=true, frame=single, backgroundcolor=\color{gray!10}, columns=fullflexible}
+
+\newtcolorbox{insightbox}{colback=blue!5, colframe=blue!40!black, breakable, left=6pt, right=6pt, top=4pt, bottom=4pt}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\setcounter{secnumdepth}{2}
+\setcounter{tocdepth}{2}
+
+\title{\LARGE 从范数约束看优化器：SGD $\to$ Muon \\[6pt] \large}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+\setcounter{section}{-1}
+
+
+
+
+
+
+\section{本讲义的主线}
+
+所有优化器都可以看成在解同一个问题：
+
+
+\[u = \arg\min_{\|\Delta\theta\| < \eta} \nabla L(\theta)^\top \Delta\theta\]
+
+**选什么范数 $\|\cdot\|$，就得到什么优化器。**
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+范数 & 约束集形状 & 最优方向 & 对应优化器 \\
+\hline
+$\ell_2$（Frobenius） & 超球 & $-g/\|g\|_2$ & GD \\
+$\ell_\infty$（逐元素） & 超盒 & $-\text{sign}(g)$ & SignGD / Adam \\
+spectral $\|B\|_2 \le 1$ & 正交矩阵集 & $-UV^\top$ & Shampoo / Muon \\
+RMS$\to$RMS induced & 缩放后正交集 & $-\sqrt{d_{\text{out}}/d_{\text{in}}}\,UV^\top$ & Muon (带muP缩放) \\
+\hline
+\end{longtable}
+\end{center}
+
+
+我们用一个\textbf{具体的线性回归}把每个范数约束的含义、最优解、收敛行为全部手算出来。
+
+
+
+
+
+\section{一层网络的梯度与Hessian：一切的起点}
+
+在讨论任何优化器之前，必须先搞清楚：\textbf{梯度长什么样？Hessian长什么样？} 它们的结构决定了哪些优化器有效、哪些没用。
+
+
+\subsection{单层模型}
+
+
+\[h = Wx, \quad z = \sigma(h)\]
+
+$x \in \mathbb{R}^d$（输入），$W \in \mathbb{R}^{m \times d}$（权重），$h \in \mathbb{R}^m$（预激活），$z \in \mathbb{R}^m$（激活后输出）。损失 $L(z)$。
+
+
+\subsection{梯度：秩1外积}
+
+链式法则：
+
+
+\[\frac{\partial L}{\partial W_{ij}} = \frac{\partial L}{\partial h_i} \cdot \frac{\partial h_i}{\partial W_{ij}} = \delta_i \cdot x_j\]
+
+其中 $\delta = \frac{\partial L}{\partial h} = \frac{\partial L}{\partial z} \odot \sigma'(h) \in \mathbb{R}^m$。
+
+写成矩阵形式：
+
+
+\[\boxed{\nabla_W L = \delta \cdot x^\top \in \mathbb{R}^{m \times d}}\]
+
+\textbf{单样本梯度是秩1外积}：上游梯度 $\delta$（$m \times 1$）$\times$ 输入激活 $x^\top$（$1 \times d$）。
+
+Mini-batch的梯度 $= \sum_{i=1}^B \delta^{(i)} x^{(i)\top}$，**秩 $\le B$**。$B = 32$、$\min(m,d) = 768$ $\to$ 梯度在768维空间中只有32个方向有信号。
+
+
+\subsection{在我们数据上}
+
+取线性回归（$\sigma = \text{id}$，$m = 1$，$d = 2$）：$\hat{y} = w^\top x$，$L = \frac{1}{2}(\hat{y} - y)^2$。
+
+
+\[X = \begin{pmatrix}2&1\\0&1\\1&0\end{pmatrix}, \quad y = \begin{pmatrix}5\\1\\2\end{pmatrix}, \quad w_0 = \begin{pmatrix}-1\\3\end{pmatrix}\]
+
+单样本梯度（第1个样本 $x_1 = (2,1), y_1 = 5$）：
+
+
+\[\delta_1 = w_0^\top x_1 - y_1 = (-2+3) - 5 = -4, \quad \nabla_w^{(1)} = \delta_1 \cdot x_1 = -4 \cdot \begin{pmatrix}2\\1\end{pmatrix} = \begin{pmatrix}-8\\-4\end{pmatrix}\]
+
+\textbf{秩1} ✓（向量的"秩1"就是一个方向）。
+
+Full-batch梯度 $= \sum_{s=1}^3 \delta_s x_s$，秩 $\le 2$（因为 $d=2$）。实际计算：
+
+
+\[g = X^\top(Xw_0 - y) = \begin{pmatrix}5&2\\2&2\end{pmatrix}\begin{pmatrix}-3\\2\end{pmatrix} = \begin{pmatrix}-11\\-2\end{pmatrix}\]
+
+
+\subsection{Hessian：逐元素推到Kronecker积}
+
+将 $W$ 向量化为 $\text{vec}(W) \in \mathbb{R}^{md}$。我们逐步推导 $H = \frac{\partial^2 L}{\partial \text{vec}(W)^2}$。
+
+\textbf{Step 1}：已知 $\frac{\partial L}{\partial W_{ij}} = \delta_i x_j$。对 $W_{kl}$ 再求导：
+
+
+\[\frac{\partial^2 L}{\partial W_{ij} \partial W_{kl}} = \frac{\partial(\delta_i x_j)}{\partial W_{kl}} = \frac{\partial \delta_i}{\partial W_{kl}} \cdot x_j\]
+
+\textbf{Step 2}：$\delta_i = \frac{\partial L}{\partial h_i}$。$h_k = \sum_l W_{kl}x_l$，所以 $\frac{\partial h_k}{\partial W_{kl}} = x_l$。链式法则：
+
+
+\[\frac{\partial \delta_i}{\partial W_{kl}} = \frac{\partial^2 L}{\partial h_i \partial h_k} \cdot x_l\]
+
+\textbf{Step 3}：代入：
+
+
+\[\frac{\partial^2 L}{\partial W_{ij} \partial W_{kl}} = \underbrace{\frac{\partial^2 L}{\partial h_i \partial h_k}}_{(H_h)_{ik}} \cdot x_j \cdot x_l\]
+
+\textbf{Step 4}：写成Kronecker积——$(H_h)_{ik}$ 是关于输出神经元的索引 $(i,k)$，$x_j x_l$ 是关于输入特征的索引 $(j,l)$：
+
+
+\[\boxed{H = (xx^\top) \otimes H_h}\]
+
+
+\subsection{用具体数字看 $H_h$}
+
+$H_h = \frac{\partial^2 L}{\partial h^2}$ 是损失对预激活 $h$ 的Hessian。它的大小是 $m \times m$（$m$ = 输出神经元数）。具体长什么样？
+
+
+\subsubsection{例子A：单输出线性层（我们的线性回归）}
+
+$m = 1$，$\sigma = \text{id}$，$L = \frac{1}{2}(h - y)^2$。
+
+
+\[H_h = \frac{\partial^2 L}{\partial h^2} = \frac{\partial^2}{\partial h^2}\frac{1}{2}(h-y)^2 = 1 \quad \text{（标量）}\]
+
+取第1个样本 $x_1 = (2, 1)$：
+
+
+\[H^{(1)} = (x_1 x_1^\top) \otimes 1 = \begin{pmatrix}4&2\\2&1\end{pmatrix}\]
+
+Full-batch求和：$H = \sum_s (x_s x_s^\top) = X^\top X = \begin{pmatrix}5&2\\2&2\end{pmatrix}$。**$H_h = 1$ 太简单了，看不出结构。**
+
+
+\subsubsection{例子B：2输出 + ReLU（有趣的情况）}
+
+$m = 2$，$d = 2$，$W \in \mathbb{R}^{2 \times 2}$。$h = Wx$，$z = \text{ReLU}(h)$，$L = \frac{1}{2}\|z - y\|^2$。
+
+取 $W = I_2$，$x = (2, 1)^\top$，$y = (1, 1)^\top$。则 $h = Wx = (2, 1)^\top$。
+
+**$H_z$**（损失对 $z$ 的Hessian）：$L = \frac{1}{2}\|z-y\|^2$ $\to$ $H_z = \frac{\partial^2 L}{\partial z^2} = I_2$。
+
+**$D_{\sigma'}$**（ReLU导数的对角阵）：$h = (2, 1)$，两个都 $> 0$，所以 $\sigma'(h) = (1, 1)$，$D_{\sigma'} = I_2$。
+
+**$\sigma''$**：ReLU的二阶导 $= 0$ 处处成立。
+
+
+\[H_h = D_{\sigma'} H_z D_{\sigma'} + \underbrace{\text{diag}(\frac{\partial L}{\partial z} \odot \sigma'')}_{= 0} = I_2 \cdot I_2 \cdot I_2 = I_2\]
+
+完整Hessian（$\text{vec}(W)$ 有4个元素，所以 $H$ 是 $4 \times 4$）：
+
+
+\[H = (xx^\top) \otimes H_h = \begin{pmatrix}4&2\\2&1\end{pmatrix} \otimes \begin{pmatrix}1&0\\0&1\end{pmatrix} = \begin{pmatrix}4&0&2&0\\0&4&0&2\\2&0&1&0\\0&2&0&1\end{pmatrix}\]
+
+Kronecker积规则：$A \otimes B$ 的第 $(i,j)$ 块 $= A_{ij} \cdot B$。所以左上角 $4 \times I_2 = \text{diag}(4,4)$，右上角 $2 \times I_2 = \text{diag}(2,2)$，等等。
+
+\textbf{现在让第2个神经元不活跃}：改 $W = \begin{pmatrix}1&0\\0&-1\end{pmatrix}$，$x = (2,1)^\top$，$h = (2, -1)^\top$。
+
+$\text{ReLU}(-1) = 0$，所以 $\sigma'(h) = (1, 0)$：
+
+
+\[D_{\sigma'} = \begin{pmatrix}1&0\\0&0\end{pmatrix}\]
+
+
+\[H_h = \begin{pmatrix}1&0\\0&0\end{pmatrix} \begin{pmatrix}1&0\\0&1\end{pmatrix} \begin{pmatrix}1&0\\0&0\end{pmatrix} = \begin{pmatrix}1&0\\0&0\end{pmatrix}\]
+
+**不活跃神经元的行和列被 $D_{\sigma'}$ 直接置零！** $H_h$ 从秩2变成了秩1。
+
+
+\[H = \begin{pmatrix}4&2\\2&1\end{pmatrix} \otimes \begin{pmatrix}1&0\\0&0\end{pmatrix} = \begin{pmatrix}4&0&2&0\\0&0&0&0\\2&0&1&0\\0&0&0&0\end{pmatrix}\]
+
+整个 $4 \times 4$ Hessian秩为1（只有一行一列非零模式）。\textbf{ReLU的稀疏激活让Hessian更加低秩。}
+
+
+\subsection{$H_h$ 分解与Gauss-Newton近似}
+
+链式法则对 $H_h = \frac{\partial^2 L}{\partial h^2}$ 展开（$z = \sigma(h)$）：
+
+
+\[H_h = \underbrace{D_{\sigma'} H_z D_{\sigma'}}_{\text{第一项}} + \underbrace{\text{diag}\!\left(\frac{\partial L}{\partial z} \odot \sigma''(h)\right)}_{\text{二阶项}}\]
+
+\textbf{什么是Gauss-Newton（GN）近似？} 丢掉第二项，只保留第一项 $D_{\sigma'} H_z D_{\sigma'}$。
+
+这个名字来自非线性最小二乘。考虑 $L = \frac{1}{2}\|r(w)\|^2$（$r$ 是残差向量），完整Hessian为：
+
+\[\nabla^2 L = \underbrace{J^\top J}_{\text{GN项}} + \underbrace{\sum_i r_i \nabla^2 r_i}_{\text{二阶项}}\]
+
+$J = \partial r / \partial w$ 是Jacobian。GN近似丢掉第二个求和（它含二阶导 $\nabla^2 r_i$，且乘以残差 $r_i$——在最优点附近 $r_i \approx 0$，所以很小）。
+
+\textbf{GN近似的三个好处}：
+\begin{itemize}[leftmargin=*,nosep]
+\item \textbf{总是半正定}（$J^\top J \succeq 0$），而完整Hessian可能不定
+\item \textbf{只需一阶导数}（Jacobian $J$），不需二阶导
+\item \textbf{线性模型上精确}（$\nabla^2 r_i = 0$，二阶项恒为零）
+\end{itemize}
+
+回到我们的 $H_h$：第一项 $D_{\sigma'} H_z D_{\sigma'}$ 就是GN项（$D_{\sigma'}$ 是激活函数Jacobian的对角形式），第二项含 $\sigma''$（二阶导）乘以 $\partial L/\partial z$（类比残差 $r_i$）。
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+激活函数 & $\sigma''$ & 二阶项 & 结论 \\
+\hline
+恒等 & $0$ & $0$ & $H_h = H_z$（精确） \\
+ReLU & $0$ & \textbf{精确为0} & $H_h = D_{\sigma'} H_z D_{\sigma'}$（GN精确） \\
+Sigmoid/GELU & $\neq 0$ & $\propto \frac{\partial L}{\partial z}$，最优点附近$\to$0 & $H_h \approx$ GN项（近似） \\
+\hline
+\end{longtable}
+\end{center}
+
+
+
+\subsection{回到我们的数据}
+
+
+\[H = \sum_{s=1}^3 (x_s x_s^\top) \otimes 1 = X^\top X = \begin{pmatrix}5&2\\2&2\end{pmatrix}\]
+
+特征分解：$H = V\text{diag}(6,1)V^\top$，$V = \frac{1}{\sqrt{5}}\begin{pmatrix}2&-1\\1&2\end{pmatrix}$，$\kappa = 6$。$w^* = (2,1)^\top$。
+
+
+\subsection{这个结构为什么重要？}
+
+
+\[H = \underbrace{(xx^\top)}_{\text{输入协方差}} \otimes \underbrace{H_h}_{\text{输出曲率}}\]
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|}
+\hline
+性质 & 推论 \\
+\hline
+$xx^\top$ 秩1（单样本） & $\text{rank}(H) \le \text{rank}(H_h)$ $\to$ \textbf{Hessian极度低秩} \\
+Kronecker积 & $(A \otimes B)^{-1} = A^{-1} \otimes B^{-1}$ $\to$ \textbf{KFAC可行} \\
+输入协方差 $\times$ 输出曲率 & 两个因子分别可估计 $\to$ \textbf{Shampoo可行} \\
+奇异值分解可分离 & 左右因子独立正交化 $\to$ \textbf{Muon有意义} \\
+\hline
+\end{longtable}
+\end{center}
+
+\subsection{从单样本到多样本：秩如何增长}
+
+上面的 $H = (xx^\top) \otimes H_h$ 是\textbf{单样本}的Hessian。$xx^\top$ 秩1 $\to$ $H$ 的秩 $\le \text{rank}(H_h) \le m$。对于 $md$ 个参数，这意味着 $md$ 维空间中只有 $\le m$ 个方向有曲率信息——其余方向完全"看不见"。
+
+\textbf{多样本求和}：full-batch的Hessian是各样本Hessian的平均：
+
+\[H_{\text{full}} = \frac{1}{N}\sum_{s=1}^N (x_s x_s^\top) \otimes H_h^{(s)}\]
+
+如果 $H_h^{(s)}$ 对所有样本相同（如线性回归中 $H_h = 1$），简化为：
+
+\[H_{\text{full}} = \underbrace{\left(\frac{1}{N}\sum_s x_s x_s^\top\right)}_{\text{秩} \le \min(N, d)} \otimes H_h\]
+
+在我们例子上：$N=3, d=2$ $\to$ $\frac{1}{N}X^\top X$ 秩 $\le \min(3,2) = 2$（满秩）。$H_h = 1$ $\to$ 总Hessian秩 $= 2$（填满了参数空间）。
+
+\textbf{Mini-batch的情况}（$B$ 个样本）：
+
+\[H_B = \frac{1}{B}\sum_{s \in \mathcal{B}} (x_s x_s^\top) \otimes H_h^{(s)}, \quad \text{rank}(H_B) \le B \cdot m\]
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+样本数 & 输入协方差的秩 & 总Hessian秩（上界） & 含义 \\
+\hline
+$1$ & $1$ & $m$ & 只"看到"1个输入方向 \\
+$B$（mini-batch） & $\min(B, d)$ & $\min(B, d) \cdot m$ & 看到 $B$ 个方向 \\
+$N$（full-batch） & $\min(N, d)$ & $\min(N, d) \cdot m$ & 看到所有数据方向 \\
+\hline
+\end{longtable}
+\end{center}
+
+\textbf{梯度也有同样的秩限制}：单样本梯度 $G = \delta x^\top$ 秩1，$B$ 个样本的平均梯度秩 $\le B$。当 $B \ll \min(m, d)$ 时（如Transformer中 $B=32, d=768$），梯度矩阵在 $768$ 维空间中只覆盖 $32$ 个方向——这直接影响Muon的有效性。
+
+\subsection{后续使用的矩阵参数例子}
+
+后半部分（§8起）分析矩阵参数时，我们取 $G \in \mathbb{R}^{3 \times 4}$（$d_{\text{out}}=3, d_{\text{in}}=4$），指定SVD为 $\sigma = (6, 3, 1)$，条件数 $\kappa_G = 6$——与线性回归的 $\kappa$ 相同。
+
+
+\section{曲率、安全性与进步}
+
+
+\subsection{什么是曲率？}
+
+Taylor展开：
+
+
+\[L(\theta + \Delta\theta) = L(\theta) + \underbrace{\nabla L(\theta)^\top \Delta\theta}_{\text{一阶：斜率}} + \underbrace{\frac{1}{2}\Delta\theta^\top H \Delta\theta}_{\text{二阶：曲率}} + \cdots\]
+
+\textbf{梯度} $g = \nabla L$ 告诉你"哪个方向下降"。\textbf{Hessian} $H = \nabla^2 L$ 告诉你"梯度本身变化有多快"——这就是\textbf{曲率}。
+
+一维直觉：$f(x) = \frac{1}{2}\lambda x^2$，$f' = \lambda x$，$f'' = \lambda$。$\lambda$ 大 $\to$ 函数弯得厉害 $\to$ 梯度变化快 $\to$ 需要小步长。$\lambda$ 小 $\to$ 几乎平坦 $\to$ 可以大步走。
+
+\textbf{多维时不同方向曲率不同}——这正是 $H$ 有多个特征值的含义。§1中我们的 $H$ 有 $\lambda_1 = 6$（陡方向）和 $\lambda_2 = 1$（平方向），曲率差6倍。
+
+
+\subsection{为什么曲率是优化的核心困难？}
+
+如果所有方向曲率相同（$H = \lambda I$，条件数 $\kappa = 1$），GD一步最优——不需要任何高级优化器。
+
+困难完全来自\textbf{曲率的不均匀}：$\kappa = \lambda_{\max}/\lambda_{\min}$ 越大，不同方向需要的步长差异越大，全局 $\eta$ 的折中越差。
+
+
+\[\text{优化器的全部历史} = \text{应对不同方向曲率不同的历史}\]
+
+
+\subsection{安全性 vs 进步}
+
+GD基于一阶近似来选步。两个矛盾的目标：
+
+\begin{itemize}[leftmargin=*,nosep]
+\item \textbf{安全性}：步长足够小，保证线性近似成立（不超出曲率允许的范围）
+\item \textbf{进步}：步长足够大，收敛才快
+\end{itemize}
+
+
+将此形式化为约束优化（Bernstein \& Newhouse 2024）：
+
+
+\[u = \arg\min_{\|\Delta\theta\| < \eta} \nabla L(\theta)^\top \Delta\theta\]
+
+**选什么范数 $\|\cdot\|$，就决定了"小"的含义，也就决定了优化器。**
+
+
+
+
+\section{$\ell_2$ 范数 $\to$ GD}
+
+
+\subsection{推导}
+
+
+\[u = \arg\min_{\|\Delta w\|_2 < \eta} g^\top \Delta w\]
+
+约束集是半径 $\eta$ 的\textbf{超球}。Cauchy-Schwarz不等式：
+
+
+\[g^\top \Delta w \ge -\|g\|_2 \|\Delta w\|_2 \ge -\eta\|g\|_2\]
+
+等号成立当 $\Delta w = -\eta \frac{g}{\|g\|_2}$。
+
+\textbf{这就是梯度下降}（归一化版本）。用Lagrangian松弛替代约束，回到经典GD $\Delta w = -\eta g$。
+
+
+\subsection{在我们数据上}
+
+$g_0 = (-11, -2)$，$\|g_0\|_2 = \sqrt{125} \approx 11.18$。
+
+$\ell_2$最优方向 $= -g_0/\|g_0\| = (0.984, 0.179)$。这个方向\textbf{完全由梯度幅值最大的分量主导}——$g_1 = -11$ 远大于 $g_2 = -2$，所以更新几乎全在 $w_1$ 方向上。
+
+特征基下的问题：最优全局 $\eta^* = 2/(\lambda_1+\lambda_2) = 2/7$，收敛率 $r = (\kappa-1)/(\kappa+1) = 5/7 \approx 0.714$。
+
+**$\ell_2$ 范数的问题**：它不区分参数的"重要程度"。$w_1$ 方向梯度大不代表该方向需要大步长——可能恰恰相反（该方向曲率大，需要小步长）。$\ell_2$ 球是各向同性的，不适应非各向同性的损失曲面。
+
+
+
+\subsection{GD的根本问题：特征方向的学习率冲突}
+
+在特征基 $\tilde{w} = V^\top w$ 下，损失解耦为独立的一维问题，每方向的演化为 $\tilde{e}_{t+1,i} = (1 - \eta\lambda_i)\tilde{e}_{t,i}$。
+
+\textbf{每方向有自己的最优和最大学习率}：
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+方向 & $\lambda_i$ & 最优 $\eta_i = 1/\lambda_i$ & 最大 $\eta_i = 2/\lambda_i$ \\
+\hline
+1（陡） & 6 & $0.167$ & $0.333$ \\
+2（平） & 1 & $1.000$ & $2.000$ \\
+差距 & $6\times$ & $6\times$ & $6\times$ \\
+\hline
+\end{longtable}
+\end{center}
+
+
+GD只有一个全局 $\eta$。最优折中 $\eta^* = 2/7 \approx 0.286$：
+
+\begin{itemize}[leftmargin=*,nosep]
+\item 方向1：$\eta^*/\eta_1^{\text{opt}} = 0.286/0.167 = 1.71$（偏大 71\%$\to$ 振荡）
+\item 方向2：$\eta^*/\eta_2^{\text{opt}} = 0.286/1.000 = 0.29$（只有最优的 29\%$\to$ 慢）
+\end{itemize}
+
+
+$\kappa = 10^4$ 时慢方向只用了最优 $\eta$ 的 $0.02\%$。
+
+
+\subsection{牛顿法：每方向用最优学习率}
+
+\textbf{二阶Taylor展开}：
+
+
+\[L(w + \Delta w) \approx L(w) + g^\top \Delta w + \frac{1}{2}\Delta w^\top H \Delta w\]
+
+对 $\Delta w$ 求导令其为零：$g + H\Delta w = 0$。
+
+
+\[\Delta w^* = -H^{-1}g\]
+
+\textbf{在特征基下看清楚}：$H = V\text{diag}(\lambda_1,\lambda_2)V^\top$，$H^{-1} = V\text{diag}(1/\lambda_1, 1/\lambda_2)V^\top$。
+
+
+\[\tilde{e}_{t+1,i} = \tilde{e}_{t,i} - \frac{1}{\lambda_i} \cdot \lambda_i \tilde{e}_{t,i} = 0\]
+
+**每方向用 $\eta_i = 1/\lambda_i$——方向1用 $1/6$，方向2用 $1$——各取所需，一步全部归零。**
+
+$H^{-1}$ 的几何含义：它将椭圆等高线（长轴对应 $\lambda_{\min}$ 方向）"拉圆"。GD沿梯度走会被椭圆"带偏"，牛顿法修正了这个偏差。
+
+
+\subsection{手算验证}
+
+
+\[H^{-1} = \frac{1}{\det(H)}\begin{pmatrix}H_{22}&-H_{12}\\-H_{21}&H_{11}\end{pmatrix} = \frac{1}{6}\begin{pmatrix}2&-2\\-2&5\end{pmatrix}\]
+
+
+\[H^{-1}g_0 = \frac{1}{6}\begin{pmatrix}2&-2\\-2&5\end{pmatrix}\begin{pmatrix}-11\\-2\end{pmatrix} = \frac{1}{6}\begin{pmatrix}-22+4\\22-10\end{pmatrix} = \frac{1}{6}\begin{pmatrix}-18\\12\end{pmatrix} = \begin{pmatrix}-3\\2\end{pmatrix}\]
+
+
+\[w_1 = w_0 - \Delta w^* = (-1, 3) - (-3, 2) = (2, 1) = w^* \quad \checkmark\]
+
+\textbf{对比GD的方向}：
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+方法 & 更新方向 & 归一化 & 与 $w^*-w_0=(3,-2)$ 的夹角 \\
+\hline
+GD & $-g_0 = (11, 2)$ & $(0.984, 0.179)$ & $\arccos\frac{33-4}{\sqrt{125}\sqrt{13}} \approx 44°$ \\
+牛顿 & $-H^{-1}g_0 = (3, -2)$ & $(0.832, -0.555)$ & $0°$（精确指向 $w^*$） \\
+\hline
+\end{longtable}
+\end{center}
+
+
+GD方向与最优方向差了 $44°$——因为 $g_0 = He_0$，Hessian的非对角元素 $H_{12}=2$ 把方向"扭偏"了。牛顿法用 $H^{-1}$ 把这个扭曲反转回来。
+
+
+\subsection{代价}
+
+$H^{-1} \in \mathbb{R}^{d \times d}$：存储 $O(d^2)$，求逆 $O(d^3)$。$d = 10^9$ 时不可行。但牛顿法告诉我们目标是什么：\textbf{给每方向自己的最优学习率}。接下来的所有方法都在逼近这个目标。
+
+
+
+
+\section{动量与权重衰减：在 $\ell_2$ 范数内的改进}
+
+牛顿法不可行，换范数的方案留到§5。有没有不换范数、不算 $H^{-1}$、只修改迭代动力学就能加速的办法？
+
+
+\subsection{Heavy Ball（Polyak, 1964）}
+
+
+\[v_t = \mu v_{t-1} + g_t, \quad w_{t+1} = w_t - \eta v_t\]
+
+$v_t$ 累积了历史梯度。物理直觉：球在损失曲面上滚动，$\mu$ 是惯性。
+
+\textbf{特征基下}第 $i$ 方向满足二阶递推：
+
+
+\[\tilde{e}_{t+1,i} = (1 + \mu - \eta\lambda_i)\tilde{e}_{t,i} - \mu\tilde{e}_{t-1,i}\]
+
+特征方程 $z^2 - (1+\mu-\eta\lambda_i)z + \mu = 0$，令 $a_i = 1+\mu-\eta\lambda_i$：
+
+
+\[z_\pm = \frac{a_i \pm \sqrt{a_i^2 - 4\mu}}{2}\]
+
+
+\subsubsection{GD的稳定性（复习）}
+
+$\mu = 0$ 时退化为一阶：$z = 1 - \eta\lambda_i$。稳定条件 $|z| < 1$，即 $0 < \eta\lambda_i < 2$。
+
+方向1（$\lambda_1=6$）：$\eta < 2/6 = 0.333$。**全局最大 $\eta$ 被最大特征值卡死。**
+
+
+\subsubsection{Heavy Ball的稳定性：两种regime}
+
+\textbf{实数根regime}（$a_i^2 > 4\mu$，即 $\eta\lambda_i$ 很小或很大）：$|z_+|$ 和 $|z_-|$ 分别控制。稳定条件仍然受 $\eta\lambda_i$ 约束。
+
+\textbf{复数根regime}（$a_i^2 < 4\mu$）：$z_\pm$ 是共轭复数，$|z_+| = |z_-| = \sqrt\mu$。
+
+\textbf{关键}：复数根时衰减率 $= \sqrt\mu$，**完全不取决于 $\eta\lambda_i$ 的值**——只要它落在复数根区域内。
+
+复数根条件：$a_i^2 < 4\mu$，展开后：
+
+
+\[(1-\sqrt\mu)^2 < \eta\lambda_i < (1+\sqrt\mu)^2\]
+
+这是一个**关于 $\eta\lambda_i$ 的区间**。令所有方向都在区间内：
+
+
+\[\eta\lambda_{\min} > (1-\sqrt\mu)^2, \quad \eta\lambda_{\max} < (1+\sqrt\mu)^2\]
+
+第二个不等式给出\textbf{最大学习率}：
+
+
+\[\eta^{\max}_{\text{HB}} = \frac{(1+\sqrt\mu)^2}{\lambda_{\max}}\]
+
+
+\subsubsection{在我们数据上对比}
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|}
+\hline
+ & GD ($\mu=0$) & HB ($\mu=0.176$，$\sqrt\mu=0.420$) \\
+\hline
+最大$\eta$的公式 & $2/\lambda_1$ & $(1+\sqrt\mu)^2/\lambda_1$ \\
+最大$\eta$的值 & $2/6 = 0.333$ & $(1.420)^2/6 = 0.336$ \\
+最优$\eta$的值 & $2/7 = 0.286$ & $0.336$（恰好在边界上） \\
+\hline
+\end{longtable}
+\end{center}
+
+
+**HB的最优 $\eta = 0.336$ 超过了GD的最大 $\eta = 0.333$。** GD在0.336会发散（方向1的 $|1-0.336\times6| = |1-2.016| = 1.016 > 1$），但HB不会——因为方向1进入了复数根regime，$|z_\pm| = \sqrt{0.176} = 0.420 < 1$。
+
+
+\subsubsection{物理图像：振荡变成了阻尼振荡}
+
+GD在 $\eta = 0.336$ 时，方向1的 $1-\eta\lambda_1 = 1-2.016 = -1.016$，\textbf{振幅每步放大 1.6\%} $\to$ 发散。
+
+HB同样 $\eta = 0.336$，方向1的 $a_1 = 1+0.176-2.016 = -0.840$。$a_1^2 = 0.706 < 4\mu = 0.704$... 刚好在边界上，$|z_\pm| = \sqrt{0.176} = 0.420$。
+
+**GD的硬振荡（$z = -1.016$，每步放大）变成了HB的阻尼振荡（$|z| = 0.420$，每步衰减58\%）。** 动量把陡方向的能量"吸收"了，而不是让它越振越大。
+
+
+\subsubsection{最优参数：为什么恰好在边界？}
+
+复数根区域内，\textbf{所有方向的衰减率都是 $\sqrt\mu$}——与 $\eta\lambda_i$ 的具体值无关。所以收敛率 $= \sqrt\mu$。
+
+我们想让 $\sqrt\mu$ 尽量小（收敛快）。但 $\mu$ 越小，复数根区间 $(1-\sqrt\mu)^2 < \eta\lambda < (1+\sqrt\mu)^2$ 越窄。如果窄到装不下 $[\eta\lambda_{\min}, \eta\lambda_{\max}]$，就有方向掉到实数根区域——实数根的衰减率可能比 $\sqrt\mu$ 更差。
+
+\textbf{所以最优策略}：选最小的 $\mu$ 使得所有方向\textbf{刚好都在复数根区域内}。"刚好"就是边界：
+
+\[\eta\lambda_{\min} = (1-\sqrt\mu)^2, \quad \eta\lambda_{\max} = (1+\sqrt\mu)^2\]
+
+两式相除消去 $\eta$：$\kappa = (1+\sqrt\mu)^2/(1-\sqrt\mu)^2$，解出 $\sqrt\kappa = (1+\sqrt\mu)/(1-\sqrt\mu)$，
+
+\[\boxed{\sqrt{\mu^*} = \frac{\sqrt\kappa - 1}{\sqrt\kappa + 1}}\]
+
+代回：$\eta^* = (1+\sqrt{\mu^*})^2/\lambda_{\max}$。
+
+\subsubsection{如果 $\mu$ 取大了呢？}
+
+在我们数据上（$\kappa = 6$）对比不同 $\mu$：
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|l|}
+\hline
+$\mu$ & $\sqrt\mu$ & 复数根区间$(\eta\lambda)$ & 能容纳$\kappa=6$？ & 收敛率 \\
+\hline
+$0.05$ & $0.224$ & $[0.60, 1.50]$（比值2.5） & $\times$（太窄） & $>0.5$  \\
+$\mathbf{0.176}$ & $\mathbf{0.420}$ & $[0.34, 2.02]$（比值$\approx 6$） & $\checkmark$（刚好） & $\mathbf{0.420}$  \\
+$0.3$ & $0.548$ & $[0.20, 2.40]$（比值11.8） & $\checkmark$（富余） & $0.548$  \\
+$0.5$ & $0.707$ & $[0.09, 2.91]$（富余很多） & $\checkmark$ & $0.707$（$\approx$GD）\\
+$0.9$ & $0.949$ & $[0.003, 3.80]$ & $\checkmark$ & $0.949$  \\
+\hline
+\end{longtable}
+\end{center}
+
+$\mu = 0.176$ 恰好让区间宽度比等于 $\kappa = 6$。更小装不下，更大则 $\sqrt\mu$ 比必要的大（浪费）。$\mu = 0.5$ 时收敛率 $0.707 \approx$ GD的 $0.714$——动量白加了。
+
+$\kappa = 6$：$\sqrt{\mu^*} \approx 0.420$，$\mu^* \approx 0.176$，$\eta^* = (1.420)^2/6 \approx 0.336$。
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|}
+\hline
+ & GD & Heavy Ball \\
+\hline
+最优 $\eta$ & $0.286$ & $0.336$ \\
+最大 $\eta$ & $0.333$ & $0.336$（最优恰在边界） \\
+收敛率 $r$ & $0.714$ & $0.420$ \\
+步数到 $10^{-6}$ & $\sim 41$ & $\sim 16$ \\
+\hline
+\end{longtable}
+\end{center}
+
+
+\textbf{总结}：最优 $\mu$ 使复数根区间\textbf{刚好装下} $[\lambda_{\min}, \lambda_{\max}]$——刚好就是最小的 $\sqrt\mu$，收敛最快。
+
+
+\subsection{Nesterov加速梯度（NAG, 1983）}
+
+
+\[v_t = \mu v_{t-1} + \nabla L(w_t + \mu(w_t - w_{t-1}))\]
+
+\[w_{t+1} = w_t - \eta v_t\]
+
+与Heavy Ball的区别：\textbf{先look ahead}（在预测位置 $w_t + \mu(w_t - w_{t-1})$ 计算梯度），再更新。
+
+
+\subsubsection{在我们数据上逐步对比}
+
+取 $\eta = 0.336$，$\mu = 0.176$（HB的最优参数），$w_0 = (-1, 3)$，$v_{-1} = 0$，$w_{-1} = w_0$。
+
+\textbf{第0步}（两者相同，因为还没有动量历史）：
+
+$g_0 = H(w_0 - w^*) = (-11, -2)$。
+
+HB：$v_0 = g_0 = (-11, -2)$，$w_1 = w_0 - 0.336 \cdot (-11,-2) = (-1+3.70,\ 3+0.67) = (2.70, 3.67)$。
+
+NAG：look-ahead位置 $= w_0 + \mu(w_0 - w_0) = w_0$（还没有历史），$v_0$ 和 $w_1$ 与HB相同。
+
+\textbf{第1步}（差异出现）：
+
+$e_1 = w_1 - w^* = (0.70, 2.67)$。$g_1 = He_1 = \begin{pmatrix}5&2\\2&2\end{pmatrix}\begin{pmatrix}0.70\\2.67\end{pmatrix} = \begin{pmatrix}8.84\\6.74\end{pmatrix}$。
+
+\textbf{HB}：在当前位置 $w_1$ 计算梯度。$v_1 = 0.176 \cdot (-11,-2) + (8.84, 6.74) = (-1.94 + 8.84,\ -0.35 + 6.74) = (6.90, 6.39)$。
+
+$w_2 = w_1 - 0.336 \cdot (6.90, 6.39) = (2.70 - 2.32,\ 3.67 - 2.15) = (0.38, 1.52)$。
+
+\textbf{NAG}：先look ahead到 $w_1^{\text{ahead}} = w_1 + \mu(w_1 - w_0) = (2.70, 3.67) + 0.176 \cdot (3.70, 0.67) = (3.35, 3.79)$。
+
+在 $w_1^{\text{ahead}}$ 计算梯度：$g_1^{\text{ahead}} = H(w_1^{\text{ahead}} - w^*) = \begin{pmatrix}5&2\\2&2\end{pmatrix}\begin{pmatrix}1.35\\2.79\end{pmatrix} = \begin{pmatrix}12.33\\8.28\end{pmatrix}$。
+
+look-ahead位置的梯度\textbf{更大}——因为它探测到了前方更远处的曲率信息。这让NAG的 $v_1$ 更大，导致更强的修正。
+
+$v_1 = 0.176 \cdot (-11,-2) + (12.33, 8.28) = (10.39, 7.93)$。
+
+$w_2 = w_1 - 0.336 \cdot (10.39, 7.93) = (2.70 - 3.49,\ 3.67 - 2.66) = (-0.79, 1.01)$。
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+ & HB $w_2$ & NAG $w_2$ & $w^*$ \\
+\hline
+$w_1$ & $0.38$ & $-0.79$ & $2$ \\
+$w_2$ & $1.52$ & $1.01$ & $1$ \\
+$\|w_2 - w^*\|$ & $1.68$ & $2.82$ & $0$ \\
+\hline
+\end{longtable}
+\end{center}
+
+
+第1步NAG的修正更猛——它"看到了"前方更陡的梯度。在二次函数上这不一定更好（HB在这一步更接近 $w^*$）。\textbf{NAG的优势在非二次情况}：如果前方曲率突然变化（如碰到鞍点、悬崖），look-ahead提前预警，而HB要等碰到了才反应。
+
+\textbf{在二次函数上}，两者的最优收敛率相同——$r^* = (\sqrt\kappa-1)/(\sqrt\kappa+1) = 0.420$。差异在于到达稳态的前几步的瞬态行为。
+
+
+\subsubsection{Nesterov下界的证明思路}
+
+\textbf{定理}（Nesterov, 1983）：对于 $\kappa$-条件数的二次问题，任何只用一阶导数的方法，$t$ 步后的最坏情况误差满足：
+
+
+\[\frac{\|w_t - w^*\|_H}{\|w_0 - w^*\|_H} \ge 2\left(\frac{\sqrt\kappa - 1}{\sqrt\kappa + 1}\right)^t\]
+
+（其中 $\|e\|_H = \sqrt{e^\top H e}$ 是 $H$-范数。）等价地，收敛率 $r \ge (\sqrt\kappa-1)/(\sqrt\kappa+1)$。
+
+\textbf{证明分两步}：
+
+\textbf{Step 1：一阶方法的迭代必须在Krylov子空间中}
+
+任何一阶方法的第 $t$ 步迭代只能用到 $g_0, g_1, \ldots, g_{t-1}$。对于二次函数 $g_k = He_k = H(w_k - w^*)$。
+
+如果 $w_k$ 只依赖 $w_0$ 和 $g_0, \ldots, g_{k-1}$，则归纳可知：
+
+
+\[w_t - w_0 \in \text{span}(g_0, Hg_0, H^2g_0, \ldots, H^{t-1}g_0) \equiv \mathcal{K}_t(H, g_0)\]
+
+这叫\textbf{Krylov子空间}。不管怎么选动量系数和学习率，$w_t$ 都被锁在 $w_0 + \mathcal{K}_t$ 里。
+
+误差 $e_t = w_t - w^*$ 的形式：$e_t = e_0 - \sum_{k=0}^{t-1} c_k H^k g_0 = e_0 - \sum_k c_k H^{k+1} e_0 = p_t(H) e_0$。
+
+其中 $p_t$ 是 $t$ 次多项式，满足 $p_t(0) = 1$（因为 $t=0$ 时没有更新，$e_0 = e_0$）。
+
+\textbf{Step 2：在Hessian的特征基下，问题归结为多项式逼近}
+
+设 $H$ 的特征值为 $\lambda_1, \ldots, \lambda_d$，$e_0$ 在特征基下的分量为 $\tilde{e}_{0,i}$。
+
+
+\[\|e_t\|_H^2 = \sum_i \lambda_i |p_t(\lambda_i)|^2 \tilde{e}_{0,i}^2\]
+
+要使这个量尽量小，需要 $p_t(\lambda_i)$ 对所有 $i$ 都尽量小——也就是找一个 $t$ 次多项式 $p_t$，满足 $p_t(0) = 1$，在 $[\lambda_{\min}, \lambda_{\max}]$ 上尽量接近零。
+
+这是经典的\textbf{Chebyshev多项式逼近问题}。
+
+\textbf{最优多项式}是平移缩放后的Chebyshev多项式 $T_t$：
+
+
+\[p_t^*(\lambda) = \frac{T_t\!\left(\frac{\lambda_{\max}+\lambda_{\min}-2\lambda}{\lambda_{\max}-\lambda_{\min}}\right)}{T_t\!\left(\frac{\lambda_{\max}+\lambda_{\min}}{\lambda_{\max}-\lambda_{\min}}\right)}\]
+
+$T_t$ 在 $[-1, 1]$ 上的最大值为 $1$，在 $[-1, 1]$ 外增长极快。$p_t^*(0) = 1$ ✓。
+
+Chebyshev多项式在分母处的值：
+
+
+\[T_t\!\left(\frac{\kappa+1}{\kappa-1}\right) \ge \frac{1}{2}\left(\frac{\sqrt\kappa+1}{\sqrt\kappa-1}\right)^t\]
+
+（用 $T_t(x) = \cosh(t\,\text{arccosh}(x))$ 对 $x > 1$ 的估计。）
+
+因此，在 $[\lambda_{\min}, \lambda_{\max}]$ 上满足 $p_t(0)=1$ 的 $t$ 次多项式的最小最大值为：
+
+
+\[\min_{p_t:\,p_t(0)=1}\ \max_{\lambda \in [\lambda_{\min},\lambda_{\max}]} |p_t(\lambda)| = \frac{1}{T_t\!\left(\frac{\kappa+1}{\kappa-1}\right)} \le 2\left(\frac{\sqrt\kappa-1}{\sqrt\kappa+1}\right)^t\]
+
+**任何一阶方法都不可能比这更好——因为它的误差多项式也必须满足 $p_t(0)=1$。**
+
+\textbf{Step 3：构造最坏情况}
+
+取 $d$ 维三对角矩阵（特征值等间距分布在 $[\lambda_{\min}, \lambda_{\max}]$），$e_0 = (1,0,\ldots,0)^\top$。此时Krylov子空间 $\mathcal{K}_t$ 只有前 $t$ 个坐标非零——第 $t$ 步完全不知道第 $t+1, \ldots, d$ 方向的信息。误差恰好等于Chebyshev下界。$\square$
+
+\textbf{在我们例子上}（$\kappa = 6$, $d = 2$）：
+
+$T_1(x) = x$，下界 $= 2 \cdot \frac{7/5}{7/5} \cdot (\frac{\sqrt{6}-1}{\sqrt{6}+1})^1$... 实际上 $d = 2$ 时一步就能跑完整个Krylov空间（$\mathcal{K}_2 = \mathbb{R}^2$），所以下界很松。**下界在 $d \gg t$ 时才紧**——高维问题中前 $t$ 步只能探索到 $t$ 个方向，剩下的完全未知。
+
+这正是高维优化困难的本质：\textbf{维度是敌人，不是因为每方向的计算变贵了，而是因为前几步的信息不足以覆盖所有方向。}
+
+NAG达到了这个下界——它是 $\ell_2$ 范数下一阶方法的\textbf{理论极限}。
+
+
+\subsection{动量的学习率视角}
+
+动量**没有给不同方向不同的 $\eta$**。它改变的是动力学：
+
+
+\[\text{GD}: r = \frac{\kappa-1}{\kappa+1} \xrightarrow{\text{动量}} r = \frac{\sqrt\kappa-1}{\sqrt\kappa+1}\]
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+$\kappa$ & GD步数 & HB/NAG步数 & 加速比 \\
+\hline
+6 & 41 & 16 & $2.6\times$ \\
+100 & 690 & 70 & $10\times$ \\
+$10^4$ & $\sim 69000$ & $\sim 690$ & $100\times$ \\
+\hline
+\end{longtable}
+\end{center}
+
+
+$\kappa$ 越大加速越显著。但 $r$ 仍然依赖 $\kappa$——椭圆还是那个椭圆，只是球在上面滚得更聪明了。
+
+**要从根本上消除 $\kappa$ 的影响，必须改变坐标系（预条件）或改变范数。**
+
+
+\subsection{权重衰减（Weight Decay）}
+
+\[w_{t+1} = (1 - \lambda)w_t - \eta g_t\]
+
+等价于在损失函数中加 $\frac{\lambda}{2\eta}\|w\|^2$（L2正则）。记 $\alpha = \lambda/\eta$（正则强度）。
+
+\subsubsection{特征基下的精确解}
+
+正则化后的最优点不再是 $w^*$，而是：
+
+\[\tilde{w}^{\text{reg}}_i = \frac{\lambda_i}{\lambda_i + \alpha}\,\tilde{w}^*_i\]
+
+每方向都被\textbf{向零收缩}，收缩因子 $= \lambda_i/(\lambda_i + \alpha)$。曲率大的方向（$\lambda_i$ 大）收缩少，曲率小的方向（$\lambda_i$ 小）收缩多。
+
+\subsubsection{偏差（Bias）}
+
+\[\text{bias}_i = |\tilde{w}^{\text{reg}}_i - \tilde{w}^*_i| = \frac{\alpha}{\lambda_i + \alpha}|\tilde{w}^*_i|\]
+
+\textbf{小 $\lambda_i$ 方向偏差大}——正则化把"平坦方向"上的参数往零拉了很多。
+
+\subsubsection{方差（Variance）}
+
+SGD的随机梯度引入噪声。在方向 $i$ 上，稳态方差 $\propto \eta/(\lambda_i + \alpha)$。
+
+没有正则化时（$\alpha=0$）：方差 $\propto \eta/\lambda_i$——\textbf{小 $\lambda_i$ 方向方差大}。加正则化后：分母从 $\lambda_i$ 变成 $\lambda_i + \alpha$——\textbf{小 $\lambda_i$ 方向方差大幅降低}。
+
+\subsubsection{偏差-方差折衷}
+
+\[\text{MSE}_i = \text{bias}_i^2 + \text{var}_i = \left(\frac{\alpha}{\lambda_i+\alpha}\right)^2 |\tilde{w}^*_i|^2 + c\,\frac{\eta}{\lambda_i+\alpha}\]
+
+在我们数据上（$w^* = (2,1)$，特征基下 $\tilde{w}^* = V^\top w^* = (\sqrt{5}, 0)$）：
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|l|}
+\hline
+方向 & $\lambda_i$ & $\tilde{w}^*_i$ & $\alpha=0$: bias/var & $\alpha=1$: bias/var \\
+\hline
+1（陡） & 6 & $\sqrt{5}$ & $0$ / $\eta/6$ & $0.32$ / $\eta/7$ \\
+2（平） & 1 & $0$ & $0$ / $\eta$ & $0$ / $\eta/2$ \\
+\hline
+\end{longtable}
+\end{center}
+
+方向1：$\alpha=1$ 引入偏差 $0.32$，但方差从 $\eta/6$ 降到 $\eta/7$（改善17\%）。方向2：$\tilde{w}^*_2 = 0$ 偏差始终为零，方差从 $\eta$ 降到 $\eta/2$（\textbf{降了一半}）。
+
+\textbf{方差大的方向（小 $\lambda_i$）获益最多，偏差大的方向（小 $\lambda_i$ 且 $\tilde{w}^*_i \neq 0$）代价也最多。}
+
+\subsubsection{有效条件数}
+
+权重衰减改变了有效特征值 $\lambda_i \to \lambda_i + \alpha$：
+
+\[\kappa_{\text{eff}} = \frac{\lambda_{\max} + \alpha}{\lambda_{\min} + \alpha}\]
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|l|}
+\hline
+$\alpha$ & $\kappa_{\text{eff}}$ & 偏差 & 方差 & 收敛 \\
+\hline
+$0$ & $6/1 = 6$ & 零 & 大 & 慢 \\
+$0.035$ & $5.83$ & 极小 & 略降 & 略快 \\
+$1$ & $7/2 = 3.5$ & 中等 & 大幅降低 & 快 \\
+$5$ & $11/6 = 1.83$ & 大 & 极低 & 极快 \\
+$\to\infty$ & $\to 1$ & $\to w^*$（全错） & $\to 0$ & 一步（但去错地方） \\
+\hline
+\end{longtable}
+\end{center}
+
+\textbf{$\alpha \to \infty$ 时 $\kappa_{\text{eff}} \to 1$——条件数完美，但解收敛到零而非 $w^*$。} 正则化的极限：可以让优化问题变得任意好条件，但代价是目标函数已经不是你原来想解的。
+
+
+\subsection{权重衰减 + 不同优化器的交互}
+
+关键问题：权重衰减是加在梯度里（$g + \lambda w$）还是直接作用在参数上（$(1-\lambda)w$）？
+
+\textbf{SGD}：两者等价。$w_{t+1} = w_t - \eta(g_t + \frac{\lambda}{\eta}w_t) = (1-\lambda)w_t - \eta g_t$。
+
+\textbf{Adam}：\textbf{不等价！} 如果加到梯度里：$\hat{g} = g + \frac{\lambda}{\eta}w$，$\hat{v}_t$ 会包含 $w$ 的平方项——$\lambda$ 和 $\eta$ 通过 $v_t$ 耦合，调一个会影响另一个。
+
+AdamW（解耦版）：直接在参数上做衰减，不进入Adam的动量和二阶矩：
+
+
+\[w_{t+1} = (1-\lambda')w_t - \eta\frac{\hat{m}_t}{\sqrt{\hat{v}_t}+\epsilon}\]
+
+\textbf{在我们数据上的AdamW平衡点}（§5已分析）：$|e_{\text{eq}}| = \eta/\lambda'$，与 $\lambda_i$ 无关——Adam的归一化掉了Hessian信息，权重衰减的效果也变成各向同性的。
+
+
+\subsection{小结：在 $\ell_2$ 范数内能走多远}
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+方法 & 修改了什么 & 收敛率 & 还差什么 \\
+\hline
+GD & — & $(\kappa-1)/(\kappa+1)$ & 被 $\kappa$ 限死 \\
++动量 & 动力学 & $(\sqrt\kappa-1)/(\sqrt\kappa+1)$ & 仍依赖 $\kappa$ \\
++权重衰减 & 有效 $\kappa$ & $(\kappa_{\text{eff}}-1)/(\kappa_{\text{eff}}+1)$ & 引入偏差 \\
+\hline
+\end{longtable}
+\end{center}
+
+
+**一阶方法在 $\ell_2$ 范数下的理论极限就是 $(\sqrt\kappa-1)/(\sqrt\kappa+1)$（Nesterov下界）。** 要突破它，需要：
+\begin{enumerate}[leftmargin=*,nosep]
+\item 预条件（近似 $H^{-1}$）$\to$ §6的路线
+\item 换范数（重新定义"安全"）$\to$ §5开始的路线
+\end{enumerate}
+
+
+
+
+
+
+\begin{insightbox}
+\textbf{从此开始，优化器设计分为两条路线}：
+- \textbf{预条件路线}：用可算的 $P$ 近似 $H^{-1}$（AdaGrad $\to$ Adam $\to$ KFAC $\to$ Shampoo）
+- \textbf{范数约束路线}：换一个更好的范数定义"安全步长"（$\ell_\infty$ $\to$ 谱范数 $\to$ RMS$\to$RMS）
+
+两条路线在Shampoo/Muon处汇合：$UV^\top$ 既是Shampoo预条件的极限，又是谱范数约束下的最优解。
+\end{insightbox}
+
+
+
+
+
+\section{$\ell_\infty$ 范数 $\to$ SignGD}
+
+
+\subsection{推导}
+
+
+\[u = \arg\min_{\|\Delta w\|_\infty < \eta} g^\top \Delta w\]
+
+约束集是边长 $2\eta$ 的\textbf{超盒}（$\ell_\infty$ 球）。
+
+$g^\top \Delta w = \sum_j g_j \Delta w_j$。每个 $|\Delta w_j| \le \eta$。为使总和最小，每个分量独立取最优：
+
+
+\[\Delta w_j^* = -\eta \cdot \text{sign}(g_j)\]
+
+\textbf{这就是SignGD}：每个参数走 $\pm\eta$，步长相同，只看方向不看大小。
+
+
+\subsection{在我们数据上}
+
+$g_0 = (-11, -2)$。
+
+$\ell_\infty$最优方向 $= -\text{sign}(g_0) = (+1, +1)$。
+
+**对比 $\ell_2$**：$\ell_2$ 给出方向 $(0.984, 0.179)$——几乎全在 $w_1$ 方向。$\ell_\infty$ 给出方向 $(1, 1)/\sqrt{2} = (0.707, 0.707)$——两个方向\textbf{等权}。
+
+
+\subsection{几何图示}
+
+
+\begin{center}
+\begin{tikzpicture}[scale=1.5, >=stealth]
+% --- Left: ℓ₂ ball ---
+\begin{scope}[shift={(-3.2,0)}]
+  % axes
+  \draw[->] (-1.7,0) -- (1.7,0) node[right,font=\small]{$w_1$};
+  \draw[->] (0,-1.7) -- (0,1.7) node[above,font=\small]{$w_2$};
+  % ball
+  \draw[blue!60, thick] (0,0) circle(1.3);
+  % gradient g at ~20° above horizontal, pointing upper-right
+  \draw[->, red!70!black, very thick] (0,0) -- (0.9,0.33) node[above right,font=\small]{$g$};
+  % optimal: -g/||g|| direction, touching circle at opposite side
+  \fill[blue!80!black] ({-1.3*cos(20)},{-1.3*sin(20)}) circle(0.06);
+  \draw[->, blue!80!black, thick, dashed] (0,0) -- ({-1.3*cos(20)},{-1.3*sin(20)});
+  \node[below left, font=\small, blue!80!black] at ({-1.0*cos(20)-0.1},{-1.0*sin(20)-0.2}) {$-\dfrac{g}{\|g\|}$};
+  \node[above, font=\small] at (0,1.65) {$\ell_2$ 约束（圆）};
+\end{scope}
+% --- Right: ℓ∞ ball ---
+\begin{scope}[shift={(3.2,0)}]
+  % axes
+  \draw[->] (-1.7,0) -- (1.7,0) node[right,font=\small]{$w_1$};
+  \draw[->] (0,-1.7) -- (0,1.7) node[above,font=\small]{$w_2$};
+  % box
+  \draw[orange!80!black, thick] (-1.3,-1.3) rectangle (1.3,1.3);
+  % same gradient
+  \draw[->, red!70!black, very thick] (0,0) -- (0.9,0.33) node[above right,font=\small]{$g$};
+  % optimal: -sign(g) = (-1,-1), at the corner of the box
+  \fill[orange!80!black] (-1.3,-1.3) circle(0.06);
+  \draw[->, orange!80!black, thick, dashed] (0,0) -- (-1.3,-1.3);
+  \node[left, font=\small, orange!80!black] at (-1.35,-1.0) {$-\text{sign}(g)$};
+  \node[above, font=\small] at (0,1.65) {$\ell_\infty$ 约束（方）};
+  % show the angle difference
+  \draw[gray, thin, dashed] (0,0) -- ({-1.3*cos(20)},{-1.3*sin(20)});
+  \node[gray, font=\tiny] at (-0.4, -0.85) {$-g$方向};
+\end{scope}
+\end{tikzpicture}
+\end{center}
+
+$\ell_2$ 球上最优点沿 $-g$ 方向碰到边界。$\ell_\infty$ 盒上最优点在角 $(-\eta, -\eta)$——偏离了 $-g$ 方向，因为方框的角比边能"走更远"。右图中灰色虚线标出了 $-g$ 方向作为对比。
+
+$\ell_2$ 球上的最优点在 $-g$ 方向（沿梯度）。$\ell_\infty$ 盒上的最优点在\textbf{角上}（每个坐标推到极限 $= \text{sign}$）。
+
+
+\subsection{SignGD的优势与代价}
+
+\textbf{优势}：每个参数方向步长相同 $= \eta$。如果 $g_1$ 很大但方向1的曲率也大（需要小步长），$g_2$ 很小但方向2的曲率小（需要大步长），那么 $\ell_\infty$ 自动\textbf{抹平了梯度幅值的差异}，一定程度上缓解了条件数问题。
+
+\textbf{代价}：在最优点附近，$g_j$ 很小时sign会频繁翻转 $\to$ 振荡/弹跳。需要学习率衰减。
+
+
+\subsection{SignGD $\approx$ Adam（在二次函数上）}
+
+Adam的更新 $\Delta w_j = -\eta \frac{\hat{m}_j}{\sqrt{\hat{v}_j}+\epsilon}$。当动量EMA稳定后，$\hat{m}_j \approx g_j$，$\hat{v}_j \approx g_j^2$：
+
+
+\[\Delta w_j \approx -\eta \frac{g_j}{\sqrt{g_j^2}+\epsilon} = -\eta \cdot \text{sign}(g_j) \cdot \frac{1}{1+\epsilon/|g_j|}\]
+
+当 $\epsilon \to 0$，$\Delta w_j \to -\eta \cdot \text{sign}(g_j)$。\textbf{Adam在二次函数上退化为SignGD。}
+
+
+
+
+\section{Adam的完整分析}
+
+
+\subsection{算法}
+
+两个EMA：一阶矩 $m_t = \beta_1 m_{t-1} + (1-\beta_1)g_t$，二阶矩 $v_t = \beta_2 v_{t-1} + (1-\beta_2)g_t^2$。
+
+偏差修正：$\hat{m}_t = m_t/(1-\beta_1^t)$，$\hat{v}_t = v_t/(1-\beta_2^t)$。
+
+更新：$w_{t+1} = w_t - \eta \hat{m}_t / (\sqrt{\hat{v}_t}+\epsilon)$。
+
+
+\subsection{Adam = 动量 + SignGD思想}
+
+\begin{itemize}[leftmargin=*,nosep]
+\item $\hat{m}_t$：梯度的EMA $\to$ 动量（平滑轨迹）
+\item $\hat{v}_t$：梯度平方的EMA $\to$ 逐参数归一化（SignGD精神）
+\item 两者结合：先用动量降噪，再用二阶矩归一化
+\end{itemize}
+
+
+$\beta_1 = 0.9$（一阶矩少平均）vs $\beta_2 = 0.999$（二阶矩多平均）。这意味着\textbf{方向信息（一阶矩）变化快，尺度信息（二阶矩）变化慢}——合理，因为梯度方向随mini-batch波动大，但各参数的"尺度"是相对稳定的。
+
+
+\subsection{在我们数据上}
+
+$g_0 = (-11, -2)$。经偏差修正后第一步 $\hat{m}_0 = (-11,-2)$，$\hat{v}_0 = (121, 4)$：
+
+
+\[\Delta w = -\eta \frac{(-11,-2)}{(\sqrt{121},\sqrt{4})+\epsilon} = -\eta \frac{(-11,-2)}{(11, 2)} = \eta(1, 1)\]
+
+\textbf{两方向步长完全相同}——这就是SignGD行为。
+
+
+\subsection{为什么Adam能用比SGD大得多的学习率？}
+
+这是实践中最重要的区别之一。我们用数据精确分析。
+
+\textbf{SGD的最大学习率}受Hessian最大特征值约束：
+
+
+\[\eta_{\text{SGD}}^{\max} = \frac{2}{\lambda_{\max}} = \frac{2}{6} = 0.333\]
+
+超过这个值，$\lambda_1 = 6$ 方向上的缩减因子 $|1 - \eta \cdot 6| > 1$ $\to$ 发散。
+
+\textbf{Adam的有效更新}是 $\Delta w_j \approx -\eta \cdot \text{sign}(g_j)$。每步每参数的变化量恒为 $\eta$——\textbf{与梯度大小无关，与Hessian特征值无关}。
+
+在我们的例子上对比同一个 $\eta = 0.5$：
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|}
+\hline
+ & SGD & Adam \\
+\hline
+更新 & $\Delta w = -0.5 \times (-11, -2) = (5.5, 1.0)$ & $\Delta w \approx -0.5 \times \text{sign}(-11,-2) = (0.5, 0.5)$ \\
+$w_1$ 方向变化量 & $5.5$（巨大） & $0.5$（温和） \\
+$\eta = 0.5$ 是否稳定？ & \textbf{发散}（$> 0.333$） & \textbf{稳定} \\
+\hline
+\end{longtable}
+\end{center}
+
+
+SGD在 $\eta = 0.5$ 时，$w_1$ 方向一步走了 $5.5$——远超最优点距离 $|w_1 - w_1^*| = 3$，严重过冲。Adam走了 $0.5$，温和得多。
+
+\textbf{根本原因}：SGD的步长 $= \eta |g_j|$，$|g_1| = 11$ 放大了步长。Adam的步长 $= \eta$，$|g_1|$ 被归一化掉了。
+
+\textbf{数值验证}：
+
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|}
+\hline
+$\eta$ & SGD能否收敛 & Adam能否收敛 \\
+\hline
+0.1 & $\checkmark$ 慢 & $\checkmark$ \\
+0.3 & $\checkmark$ 接近最快 & $\checkmark$ \\
+0.5 & \textbf{$\times$ 发散} & $\checkmark$ \\
+1.0 & $\times$ & $\checkmark$ \\
+3.0 & $\times$ & $\checkmark$ 慢（振荡） \\
+\hline
+\end{longtable}
+\end{center}
+
+
+Adam的可用 $\eta$ 范围比SGD宽一个数量级。这就是实践中Adam"好调"的核心原因——**$\lambda_{\max}$ 不再是瓶颈**。
+
+\textbf{代价}：Adam把所有方向的有效步长拉平到 $\eta$，丢失了梯度幅值信息。在方向2（$\lambda_2 = 1$）上，SGD用 $\eta = 0.3$ 时有效步长 $0.3 \times 2 = 0.6$，接近最优的 $1$；Adam也只有 $0.5$——\textbf{没有更快，只是更安全}。
+
+
+\subsection{Adam/SignGD的稳定性精确分析}
+
+SGD的最大 $\eta$ 来自 $|1 - \eta\lambda_{\max}| < 1$。Adam呢？
+
+\textbf{在特征基下分析}（先假设 $H$ 对角，使sign沿特征方向操作）。第 $i$ 方向：
+
+
+\[\tilde{e}_{t+1,i} = \tilde{e}_{t,i} - \eta\,\text{sign}(\lambda_i\,\tilde{e}_{t,i}) = \tilde{e}_{t,i} - \eta\,\text{sign}(\tilde{e}_{t,i})\]
+
+注意 $\lambda_i > 0$ 不影响sign。这是一个\textbf{定步长趋零迭代}，每步误差减少恒定量 $\eta$：
+
+\begin{itemize}[leftmargin=*,nosep]
+\item $|\tilde{e}| > \eta$：$|\tilde{e}_{t+1}| = |\tilde{e}_t| - \eta$（线性下降，总在接近0）
+\item $|\tilde{e}| = \eta$：$\tilde{e}_{t+1} = 0$（恰好到达）
+\item $0 < |\tilde{e}| < \eta$：$|\tilde{e}_{t+1}| = \eta - |\tilde{e}_t|$（\textbf{过冲！} 跳到另一侧）
+\end{itemize}
+
+
+**关键结论：$|\tilde{e}|$ 永远不会超过 $\eta$。** 一旦进入 $(-\eta, \eta)$ 区间就在里面振荡。
+
+
+\[\boxed{\text{Adam/SignGD在确定性二次函数上无条件稳定——没有最大}\eta\text{的限制}}\]
+
+对比SGD：$\eta > 2/\lambda_{\max} = 1/3$ 就发散。Adam的 $\eta = 100$ 都不会发散——只是收敛到的精度差。
+
+
+\subsection{损失地板（loss floor）}
+
+Adam在每个方向上的稳态误差 $|\tilde{e}_{\infty,i}| \le \eta$。损失地板：
+
+
+\[L_{\text{floor}} = \frac{1}{2}\sum_i \lambda_i\,\tilde{e}_{\infty,i}^2 \le \frac{\eta^2}{2}\sum_i \lambda_i = \frac{\eta^2}{2}\,\text{tr}(H)\]
+
+\textbf{在我们数据上}：$\text{tr}(H) = \lambda_1 + \lambda_2 = 6 + 1 = 7$。
+
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|}
+\hline
+$\eta$ & SGD状态 & Adam损失地板 $\le \eta^2 \cdot 7/2$ \\
+\hline
+$0.01$ & 收敛极慢 & $3.5 \times 10^{-4}$ \\
+$0.1$ & 收敛中 & $0.035$ \\
+$0.3$ & 接近最优 & $0.315$ \\
+$1.0$ & \textbf{发散} & $3.5$（很粗糙） \\
+$10$ & 发散 & $350$（没有意义） \\
+\hline
+\end{longtable}
+\end{center}
+
+
+**Adam的 $\eta$ 越大，到达地板越快，但地板越高。** 这就是为什么实践中需要学习率衰减——先用大 $\eta$ 快速下降，再用小 $\eta$ 降低地板。
+
+SGD没有这个问题：$\eta < 2/\lambda_{\max}$ 时可以指数收敛到精确最优点（$L_{\text{floor}} = 0$）。
+
+
+\subsection{随机梯度下的噪声地板}
+
+实际中用mini-batch梯度 $\hat{g} = g + \xi$，$\xi$ 是零均值噪声。
+
+\textbf{SGD的噪声地板}：在 $\eta < 2/\lambda_{\max}$ 时，SGD收敛到一个噪声驱动的稳态。稳态损失：
+
+
+\[L_{\text{SGD}}^{\text{floor}} \approx \frac{\eta}{2}\,\text{tr}(H\Sigma_\xi) \approx \frac{\eta}{2B}\,\text{tr}(H\Sigma_g)\]
+
+其中 $\Sigma_g$ 是单样本梯度协方差，$B$ 是batch size。**与 $\eta$ 线性关系。**
+
+\textbf{Adam的噪声地板}：当 $|g_j| \lesssim |\xi_j|$（信号被噪声淹没）时，$\text{sign}(\hat{g}_j)$ 约一半时间取错方向——等效于随机走步。
+
+对于方向 $i$，噪声主导的条件：$|\lambda_i\tilde{e}_i| \lesssim \sigma_{\xi,i}$，即 $|\tilde{e}_i| \lesssim \sigma_{\xi,i}/\lambda_i$。
+
+此时该方向的误差被噪声锁定在 $O(\sigma_\xi/\lambda_i)$ 量级，对应损失贡献：
+
+
+\[L_{\text{Adam},i}^{\text{floor}} \sim \frac{1}{2}\lambda_i \left(\frac{\sigma_{\xi,i}}{\lambda_i}\right)^2 = \frac{\sigma_{\xi,i}^2}{2\lambda_i}\]
+
+\textbf{总噪声地板}：
+
+
+\[L_{\text{Adam}}^{\text{floor}} \sim \sum_i \frac{\sigma_{\xi,i}^2}{2\lambda_i}\]
+
+注意这\textbf{不依赖 $\eta$}（只要 $\eta$ 大到能到达这个区域）。确定性地板（SignGD振荡）和噪声地板\textbf{同时存在，是叠加关系}：
+
+\[L_{\text{floor}} = \frac{\eta^2}{2}\text{tr}(H) + \sum_i \frac{\sigma_{\xi,i}^2}{2\lambda_i}\]
+
+\textbf{在我们数据上}（假设 $\sigma_\xi = 1$，即梯度噪声标准差为1）：
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|}
+\hline
+地板来源 & 公式 & 数值 \\
+\hline
+确定性（SignGD振荡） & $\eta^2 \cdot 7/2$ & $3.5\eta^2$ \\
+随机性（噪声） & $\sigma_\xi^2(1/\lambda_1 + 1/\lambda_2)/2$ & $0.583$ \\
+\textbf{总地板} & \textbf{两项之和} & $3.5\eta^2 + 0.583$ \\
+\hline
+\end{longtable}
+\end{center}
+
+
+$\eta = 0.1$ 时：$L_{\text{floor}} = 0.035 + 0.583 = 0.618$。\textbf{噪声主导。}
+
+$\eta = 1$ 时：$L_{\text{floor}} = 3.5 + 0.583 = 4.08$。\textbf{振荡主导。} 需要衰减 $\eta$。
+
+
+\subsection{AdamW：权重衰减创造平衡点}
+
+
+\[w_{t+1} = (1-\lambda')w_t - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t}+\epsilon}\]
+
+权重衰减将参数向零拉，梯度将参数向 $w^*$ 推。两者平衡时：
+
+
+\[(1-\lambda')w_{\text{eq}} = w_{\text{eq}} - \eta\,\text{sign}(g_{\text{eq}}) \implies \lambda' w_{\text{eq}} = \eta\,\text{sign}(\lambda_i e_{\text{eq},i})\]
+
+在特征基下第 $i$ 方向（$w^*_i = 0$ 简化分析）：
+
+
+\[\lambda'\,e_{\text{eq},i} = \eta\,\text{sign}(e_{\text{eq},i}) \implies |e_{\text{eq},i}| = \frac{\eta}{\lambda'}\]
+
+**均衡误差 $= \eta/\lambda'$，与Hessian特征值无关**（又一次体现了Adam对曲率的不敏感性）。
+
+在我们例子上，$\eta = 0.001$，$\lambda' = 0.01$：$|e_{\text{eq}}| = 0.1$ per方向。对应损失贡献 $\sim \frac{1}{2}(6 + 1) \times 0.01 = 0.035$。
+
+
+\subsection{存储代价与近年变体}
+
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|}
+\hline
+方法 & 存储量 \\
+\hline
+SGD & $1\times$ \\
+SGD+动量 & $2\times$ \\
+Adam & $3\times$（+$m$+$v$） \\
+Lion & $2\times$ \\
+Cautious Adam & $3\times$（同Adam） \\
+\hline
+\end{longtable}
+\end{center}
+
+
+
+\subsubsection{Lion（Chen et al., 2023）}
+
+Lion保留了SignGD+动量的精神，但省掉了二阶矩 $v$：
+
+
+\[c_t = \beta_1 m_{t-1} + (1-\beta_1)\nabla L(w_t)\]
+
+\[w_{t+1} = w_t - \eta\,\text{sign}(c_t) - \eta\lambda w_t\]
+
+\[m_t = \beta_2 m_{t-1} + (1-\beta_2)\nabla L(w_t)\]
+
+注意：$c_t$（用于sign）和 $m_t$（存到下一步）用\textbf{不同的动量系数} $\beta_1, \beta_2$（通常 $\beta_1 = 0.9, \beta_2 = 0.99$）。$c_t$ 用较小的 $\beta_1$ $\to$ 更快跟踪当前梯度方向；$m_t$ 用较大的 $\beta_2$ $\to$ 更平滑的历史积累。
+
+与Adam的区别：没有 $v_t$，直接对动量取sign。省了 $1\times$ 存储。\textbf{但需要更大的权重衰减}（$\lambda$ 通常比AdamW大3-10倍），因为sign操作丢失了幅值信息后，权重衰减成为控制参数范数的主要手段。
+
+在我们例子上：$g_0 = (-11, -2)$，$m_{-1} = 0$。$c_0 = 0.1 \times (-11,-2) = (-1.1, -0.2)$。$\text{sign}(c_0) = (-1, -1)$。更新方向 $= (+1, +1)$——与Adam/SignGD相同。
+
+
+\subsubsection{Cautious Optimizers（Liang et al., 2024）}
+
+核心思想：Adam/Lion的更新方向有时与当前梯度方向\textbf{冲突}——更新的某些分量在远离梯度指向的方向走。Cautious方法"掩码掉"这些冲突分量：
+
+
+\[\text{mask}_t = \mathbb{1}[\text{sign}(\Delta w_t) = \text{sign}(g_t)]\]
+
+\[w_{t+1} = w_t - \eta\,(\Delta w_t \odot \text{mask}_t) \cdot \frac{d}{\|\text{mask}_t\|_1}\]
+
+$\Delta w_t$ 是原始Adam/Lion的更新步。$\text{mask}$ 保留与当前梯度"同向"的分量，丢弃反向的。最后乘 $d/\|\text{mask}\|_1$ 做归一化补偿（保持总步长不变）。
+
+可以应用在任何基础优化器上：C-Adam、C-Lion、C-SGD 等。
+
+在我们例子上：Adam步 $\Delta w = \eta(1, 1)$。$g_0 = (-11, -2)$，$-g_0 = (11, 2)$，sign $= (+1, +1)$。$\text{sign}(\Delta w) = (+1, +1) = \text{sign}(-g_0)$。\textbf{全部同向，mask全1}——Cautious不做任何修改。
+
+当动量累积导致某些分量与当前梯度反向时，Cautious才介入。这主要发生在损失曲面快速变化时（如学习率warmup阶段、loss spike后）。
+
+
+\subsubsection{其他值得了解的变体}
+
+\textbf{ADOPT}（Taniguchi et al., 2024）：修复Adam在非平稳目标上不收敛的理论缺陷。关键改动：$v_t$ 用 $g_{t-1}$（而非 $g_t$）更新，保证 $v_t$ 和 $m_t$ 的条件独立性。更新公式：
+
+
+\[m_t = \beta_1 m_{t-1} + (1-\beta_1)g_t, \quad v_t = \beta_2 v_{t-1} + (1-\beta_2)g_{t-1}^2\]
+
+\[w_{t+1} = w_t - \eta\,\frac{m_t}{\sqrt{v_t} + \epsilon}\]
+
+\textbf{Sophia}（Liu et al., 2023）：用Hessian对角的随机估计替代 $v_t$：
+
+
+\[h_t = \text{diag}(\hat{H}_t), \quad w_{t+1} = w_t - \eta\,\text{clip}\!\left(\frac{m_t}{h_t}, \rho\right)\]
+
+$\hat{H}_t$ 通过Hutchinson估计器（$\hat{H} \approx v^\top H v$，$v$ 是随机Rademacher向量）每隔 $k$ 步更新。\textbf{clip} 限制每参数步长在 $[-\rho, \rho]$ 内——类似SignGD的精神，但用真实曲率信息替代了Adam的 $\sqrt{g^2}$ 近似。
+
+
+
+
+
+\section{预条件路线：从对角到Kronecker}
+
+
+\subsection{统一视角：$\Delta w = -P_t \cdot m_t$}
+
+所有基于预条件的优化器都可以写成：
+
+
+\[w_{t+1} = w_t - \eta\,P_t\,m_t\]
+
+$m_t$ 是某种动量估计，$P_t$ 是预条件矩阵——近似 $H^{-1}$。
+
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|}
+\hline
+优化器 & $P_t$ & $m_t$ \\
+\hline
+SGD & $I$ & $g_t$ \\
+牛顿法 & $H^{-1}$（精确，$O(d^3)$） & $g_t$ \\
+AdaGrad & $\text{diag}(\sum g^2)^{-1/2}$ & $g_t$ \\
+Adam & $\text{diag}(\text{EMA}(g^2))^{-1/2}$ & $\text{EMA}(g)$ \\
+KFAC & $B^{-1} \otimes A^{-1}$（Kronecker） & $g_t$ \\
+\hline
+\end{longtable}
+\end{center}
+
+
+
+\subsection{对角预条件（Adam）的局限}
+
+Adam的 $P = \text{diag}(1/\sqrt{\hat{v}})$ 只有对角元素——它逐参数归一化，但\textbf{不处理参数间耦合}。
+
+在我们例子上：$H = \begin{pmatrix}5&2\\2&2\end{pmatrix}$，对角预条件 $P = \text{diag}(1/5, 1/2)$。
+
+预条件后有效Hessian $PH = \begin{pmatrix}1&0.4\\1&1\end{pmatrix}$，特征值 $(1.63, 0.37)$，条件数 $4.4$（原来6，改善有限）。
+
+**非对角元素 $H_{12} = 2$ 完全没被处理。** 极端例子：$H' = \begin{pmatrix}3&2\\2&3\end{pmatrix}$，$\kappa = 5$，但 $\text{diag}(H') = (3,3)$ $\to$ 对角预条件零效果。
+
+
+\subsection{自然梯度：另一种"曲率"}
+
+对角预条件不够，需要完整的矩阵 $P$。但用什么 $P$？
+
+**牛顿法用 $P = H^{-1}$**——$H$ 是损失函数在参数空间中的曲率（§2.1定义的）。但 $H$ 有两个问题：(1) 可能不半正定（非凸区域），(2) 依赖于参数化方式——同一个模型换一种写法，$H$ 就变了。
+
+有没有一种更"本质"的曲率？
+
+
+\subsubsection{三个层次的曲率}
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+曲率 & 度量的是 & 对应矩阵 & 依赖参数化？ \\
+\hline
+损失曲率 & $L(\theta)$ 在参数空间中弯曲程度 & Hessian $H = \nabla^2 L$ & 是 \\
+统计曲率 & 模型分布 $p_\theta$ 在概率空间中弯曲程度 & Fisher信息 $F$ & \textbf{否} \\
+函数曲率 & 输出 $f_\theta(x)$ 在函数空间中弯曲程度 & Gauss-Newton $J^\top J$ & 否 \\
+\hline
+\end{longtable}
+\end{center}
+
+
+\textbf{Fisher信息矩阵}是统计流形上的Riemannian度量——它度量的不是"参数 $\theta$ 变了多少"，而是"模型的输出分布 $p_\theta$ 变了多少"。
+
+
+\subsubsection{历史线索}
+
+\begin{enumerate}[leftmargin=*,nosep]
+\item \textbf{Fisher (1925)}：定义 $F_{ij} = \mathbb{E}\left[\frac{\partial \log p}{\partial \theta_i}\frac{\partial \log p}{\partial \theta_j}\right]$——Score函数的协方差。最初用于参数估计的Cramér-Rao下界：$\text{Var}(\hat\theta) \ge F^{-1}$。
+
+\item \textbf{Rao (1945)}：发现 $F$ 可以作为参数空间上的Riemannian度量——两个参数点的"统计距离"$ds^2 = d\theta^\top F\,d\theta$。**同一个模型的不同参数化（如用 $\theta$ 还是用 $\phi = g(\theta)$）给出不同的欧氏距离但相同的统计距离。**
+
+\item \textbf{Amari (1998)}：将Rao的想法用于优化——在统计距离而非欧氏距离下做最速下降，得到\textbf{自然梯度} $\Delta\theta = -F^{-1}\nabla L$。
+\end{enumerate}
+
+
+
+\subsubsection{为什么Fisher是"正确的"曲率？}
+
+核心论证：$F$ 是KL散度的二阶展开。
+
+
+\[D_{\text{KL}}(p_\theta \| p_{\theta+\Delta\theta}) = \mathbb{E}_{p_\theta}\left[\log\frac{p_\theta}{p_{\theta+\Delta\theta}}\right]\]
+
+对 $\Delta\theta$ Taylor展开（利用 $\mathbb{E}[\nabla\log p] = 0$）：
+
+
+\[D_{\text{KL}}(p_\theta \| p_{\theta+\Delta\theta}) \approx \frac{1}{2}\Delta\theta^\top F\,\Delta\theta\]
+
+**$F$ 是KL散度的Hessian。** 而KL散度度量的是"两个分布有多不同"——这正是我们想控制的：一步更新后模型的行为不能变太多。
+
+
+\[\underbrace{H = \nabla^2 L}_{\text{损失曲面的曲率}} \quad \text{vs} \quad \underbrace{F = \nabla^2 D_{\text{KL}}}_{\text{模型分布的曲率}}\]
+
+类比§2.3的框架：$H$ 告诉你"参数空间中走多远是安全的"，$F$ 告诉你"分布空间中走多远是安全的"。后者更本质——因为我们训练模型是为了得到好的分布，不是为了得到好看的参数值。
+
+
+\subsubsection{自然梯度}
+
+在 $F$-度量下做最速下降：
+
+
+\[\Delta w^* = \arg\min_{\Delta w^\top F \Delta w \le \eta^2} g^\top \Delta w = -\eta\,\frac{F^{-1}g}{\sqrt{g^\top F^{-1}g}}\]
+
+松弛为无约束：$\Delta w = -F^{-1}g$。
+
+
+\subsubsection{在我们数据上}
+
+高斯模型 $p(y|x,w) = \mathcal{N}(w^\top x, \sigma^2)$。$\nabla_w \log p = \frac{1}{\sigma^2}(y - w^\top x)x$。
+
+
+\[F = \mathbb{E}\left[\frac{1}{\sigma^4}(y-w^\top x)^2 xx^\top\right] = \frac{1}{\sigma^2}\mathbb{E}[xx^\top] = \frac{1}{N\sigma^2}X^\top X\]
+
+取 $\sigma^2 = 1$：$F = H/N = H/3$。
+
+**Fisher $\propto$ Hessian！\textbf{ 这不是巧合——对于}指数族**（高斯、Bernoulli等），$F$ 和负对数似然的 $H$ 恰好成正比。线性回归是最简单的例子。
+
+深层网络不是指数族，$F \neq H$——但 $F$ 近似于Gauss-Newton矩阵（$H$ 的半正定近似，丢掉了§1.6中的二阶项），实践中差距不大。
+
+
+\[F^{-1}g_0 = 3\,H^{-1}g_0 = 3 \times \begin{pmatrix}-3\\2\end{pmatrix} = \begin{pmatrix}-9\\6\end{pmatrix}\]
+
+方向与牛顿法完全相同（差标量倍数），精确指向 $w^*$。
+
+
+\subsubsection{Fisher vs Hessian}
+
+
+
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|}
+\hline
+ & Hessian $H$ & Fisher $F$ \\
+\hline
+定义 & $\nabla^2 L$ & $\mathbb{E}[(\nabla\log p)(\nabla\log p)^\top]$ \\
+度量的曲率 & 损失曲面 & 统计流形（KL散度） \\
+半正定？ & 不一定 & \textbf{总是}（外积的期望） \\
+依赖参数化？ & 是 & \textbf{否}（Riemannian不变量） \\
+线性回归 & $X^\top X$ & $X^\top X / N$（$\propto H$） \\
+深层网络 & 含 $\sigma''$ 项 & $\approx$ Gauss-Newton \\
+计算量 & $O(d^3)$ & 同样 $O(d^3)$ \\
+\hline
+\end{longtable}
+\end{center}
+
+
+**自然梯度的代价和牛顿法一样——$F^{-1}$ 也是 $d \times d$ 矩阵，$O(d^3)$ 求逆。** 所以需要近似——这正是KFAC的动机。
+
+
+\subsection{从自然梯度到KFAC}
+
+$F$ 不可行。但§1告诉我们 $G = \delta a^\top$，所以：
+
+
+\[F = \mathbb{E}[(a \otimes \delta)(a \otimes \delta)^\top] = \mathbb{E}[(aa^\top) \otimes (\delta\delta^\top)]\]
+
+\textbf{KFAC就是自然梯度的Kronecker因子近似}：假设 $a$ 和 $\delta$ 独立，$F \approx A \otimes B$。
+
+
+\subsection{KFAC：利用§1推导的Kronecker结构}
+
+§1已经证明了 $H = (xx^\top) \otimes H_h$——Hessian天然是Kronecker积。KFAC将这个结构用于优化。
+
+对于全连接层 $z = Wa$，梯度 $G = \delta a^\top$。Fisher矩阵（从§7.4）：
+
+
+\[F = \mathbb{E}[(a \otimes \delta)(a \otimes \delta)^\top] \approx \underbrace{\mathbb{E}[aa^\top]}_{A} \otimes \underbrace{\mathbb{E}[\delta\delta^\top]}_{B}\]
+
+逆利用Kronecker积性质：$(A \otimes B)^{-1} = A^{-1} \otimes B^{-1}$。
+
+
+\[\text{vec}(\Delta W) = (A^{-1} \otimes B^{-1})\text{vec}(G) \iff \Delta W = B^{-1}GA^{-1}\]
+
+**从 $(d_{\text{in}}d_{\text{out}})^3$ 的求逆变成了 $d_{\text{in}}^3 + d_{\text{out}}^3$ ——大幅降低。**
+
+
+\subsection{在我们数据上验证KFAC}
+
+把线性回归看成单层网络（$d_{\text{out}}=1, d_{\text{in}}=2$）。$A = X^\top X/N = H/3$，特征值 $\alpha_1=2, \alpha_2=1/3$。
+
+KFAC的有效学习率比：$\eta_2/\eta_1 = \alpha_1/\alpha_2 = 6 = \kappa$。\textbf{精确匹配Hessian频谱。}
+对角预条件只给出比值 $H_{11}/H_{22} = 5/2 = 2.5$，差 $2.4$ 倍。
+
+KFAC的方向 $\propto A^{-1}g \propto H^{-1}g$——\textbf{就是牛顿方向}。（单层线性模型上KFAC精确恢复牛顿法。）
+
+
+\subsection{KFAC的局限}
+
+\begin{enumerate}[leftmargin=*,nosep]
+\item \textbf{独立性假设}：$a$ 和 $\delta$ 不完全独立，近似有误差
+\item \textbf{周期性特征分解}：$A^{-1}, B^{-1}$ 需要每隔 $T$ 步重算，$O(d_{\text{in}}^3 + d_{\text{out}}^3)$
+\item \textbf{不同层形状导致不同的有效学习率}——但没有自动调节
+
+\end{enumerate}
+
+
+
+\section{从预条件到范数约束：两条路线的汇合}
+
+
+\subsection{Shampoo：预条件路线的终点}
+
+Shampoo用 $(GG^\top)^{-1/4}G(G^\top G)^{-1/4}$ 做预条件。如果统计量仅由当前 $G$ 决定：
+
+
+\[(GG^\top)^{-1/4}G(G^\top G)^{-1/4} = UV^\top\]
+
+（推导见§12。）这把 Shampoo 和 $UV^\top$ 连接了起来。
+
+
+\subsection{$UV^\top$ 也是范数约束路线的结果}
+
+同时，我们下面将证明：在谱范数约束 $\|\Delta W\|_2 \le \eta$ 下，
+
+
+\[\arg\min_{\|B\|_2 \le 1} \langle G, B \rangle_F = -UV^\top\]
+
+\textbf{两条路线在同一个终点汇合。} 接下来我们从范数约束路线严格推导这个结果。
+
+
+\subsection{参数空间的"小"$\neq$函数空间的"小"}
+
+这是切换到范数约束视角的关键动机。$\Delta W$ 在参数空间中小（$\|\Delta W\|_F$ 小）不代表它对输出的影响小：
+
+
+\[\|\Delta W\|_F\ \text{小} \quad \not\Rightarrow \quad \|\Delta W \cdot x\|\ \text{对典型}\ x\ \text{小}\]
+
+我们需要一种范数，**直接度量 $\Delta W$ 对输出的最大影响**。
+
+
+\section{诱导范数（Induced Norm）}
+
+
+\subsection{定义}
+
+给定输入空间的范数 $\|\cdot\|_p$ 和输出空间的范数 $\|\cdot\|_q$，矩阵 $A$ 的\textbf{诱导范数}（也叫算子范数）定义为：
+
+
+\[\|A\|_{p \to q} = \max_{\|x\|_p \le 1} \|Ax\|_q\]
+
+\textbf{含义}：$A$ 将输入 $x$（$\|x\|_p \le 1$）映射到输出 $Ax$ 时，输出范数最大能有多大。
+
+
+\subsection{$\ell_2 \to \ell_2$ 诱导范数 = 谱范数}
+
+取 $p = q = 2$：
+
+
+\[\|A\|_{2 \to 2} = \max_{\|x\|_2 \le 1} \|Ax\|_2 = \sigma_1(A)\]
+
+就是最大奇异值。\textbf{谱范数度量了矩阵作为线性映射的最大放大率。}
+
+在我们的 $G \in \mathbb{R}^{3 \times 4}$（$\sigma = (6,3,1)$）上：$\|G\|_{2 \to 2} = 6$。
+
+含义：存在一个单位向量 $x = v_1$（$G$ 的第一右奇异向量），使得 $\|Gx\|_2 = 6$。
+
+
+\subsection{用诱导范数做约束}
+
+将§2的框架推广到矩阵参数。目标函数的一阶近似：
+
+
+\[L(W + \Delta W) \approx L(W) + \langle \nabla_W L, \Delta W \rangle_F\]
+
+其中 $\langle A, B \rangle_F = \text{tr}(A^\top B) = \sum_{ij} A_{ij}B_{ij}$ 是Frobenius内积。
+
+\textbf{安全性约束}：要求更新对输出的影响有界，即 $\|\Delta W\|_{2 \to 2} \le \eta$。
+
+
+\[\Delta W^* = \arg\min_{\|\Delta W\|_{2 \to 2} \le \eta} \langle G, \Delta W \rangle_F\]
+
+**这就从"参数空间的安全"（$\ell_2$ 或 $\ell_\infty$）切换到了"函数空间的安全"（谱范数）。**
+
+
+\paragraph{Frobenius 内积.}
+设 $G, B \in \mathbb{R}^{m \times n}$，其 Frobenius 内积定义为
+\[
+\langle G, B \rangle_F
+= \sum_{i=1}^{m} \sum_{j=1}^{n} G_{ij} B_{ij}.
+\]
+该内积等价于 trace 形式
+\[
+\langle G, B \rangle_F = \operatorname{trace}(G^\top B).
+\]
+
+\paragraph{证明.}
+注意到
+\[
+(G^\top B)_{jj} = \sum_{i=1}^{m} G_{ij} B_{ij},
+\]
+因此
+\[
+\operatorname{trace}(G^\top B)
+= \sum_{j=1}^{n} (G^\top B)_{jj}
+= \sum_{j=1}^{n} \sum_{i=1}^{m} G_{ij} B_{ij}
+= \sum_{i=1}^{m} \sum_{j=1}^{n} G_{ij} B_{ij}.
+\]
+从而
+\[
+\langle G, B \rangle_F = \operatorname{trace}(G^\top B).
+\]
+
+
+
+\section{谱范数约束下的最优更新 $\to$ $UV^\top$}
+
+
+\subsection{准备：矩阵参数的例子}
+
+取 $G \in \mathbb{R}^{3 \times 4}$，SVD为：
+
+
+\[G = U\Sigma V^\top, \quad U = \frac{1}{3}\begin{pmatrix}2&1&2\\-2&2&1\\1&2&-2\end{pmatrix},\quad \Sigma = \text{diag}(6,3,1),\quad V^\top = (I_3 \mid 0)\]
+
+
+\subsection{严格推导}
+
+\textbf{命题}：$\arg\min_{\|B\|_2 \le 1} \text{tr}(G^\top B) = -UV^\top$。
+
+\textbf{证明}：
+
+\textbf{Step 1.} 展开目标函数。$G = \sum_{i=1}^r \sigma_i u_i v_i^\top$，所以 $G^\top = \sum_i \sigma_i v_i u_i^\top$。
+
+
+\[\text{tr}(G^\top B) = \text{tr}\!\left(\sum_i \sigma_i v_i u_i^\top B\right) = \sum_i \sigma_i \cdot \text{tr}(v_i u_i^\top B) = \sum_i \sigma_i \cdot u_i^\top B v_i\]
+
+最后一步用了 $\text{tr}(v_i u_i^\top B) = \text{tr}(u_i^\top B v_i) = u_i^\top B v_i$（标量的trace等于自身）。
+
+\textbf{Step 2.} 上下界。$\|B\|_2 \le 1$ 意味着对任何单位向量 $x, y$：$|y^\top B x| \le \|y\|_2 \|Bx\|_2 \le \|B\|_2 \le 1$。
+
+特别地，$|u_i^\top B v_i| \le 1$（因为 $\|u_i\|=\|v_i\|=1$）。
+
+因此 $\text{tr}(G^\top B) = \sum_i \sigma_i (u_i^\top B v_i) \ge -\sum_i \sigma_i$（每项取下界 $-1$）。
+
+\textbf{Step 3.} 取等条件。令 $B^* = -UV^\top = -\sum_i u_i v_i^\top$。验证：
+
+\begin{itemize}[leftmargin=*,nosep]
+\item $\|B^*\|_2 = \|UV^\top\|_2 = 1$ ✓（$UV^\top$ 的奇异值全为1）
+\item $u_i^\top B^* v_i = u_i^\top (-\sum_j u_j v_j^\top) v_i = -\sum_j (u_i^\top u_j)(v_j^\top v_i) = -\delta_{ii} = -1$ ✓
+\end{itemize}
+
+
+所以 $\text{tr}(G^\top B^*) = -\sum_i \sigma_i$，达到下界。$\square$
+
+\textbf{最优更新}：$\Delta W^* = \eta B^* = -\eta UV^\top$。
+
+
+\subsection{在我们例子上}
+
+
+\[UV^\top = \frac{1}{3}\begin{pmatrix}2&1&2&0\\-2&2&1&0\\1&2&-2&0\end{pmatrix}\]
+
+$\|UV^\top\|_2 = 1$。三个奇异方向上的更新幅度**都是 $\eta$**。
+
+**与 $\ell_2, \ell_\infty$ 约束的对比**：
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|l|}
+\hline
+范数约束 & 更新 & 三方向幅度比 & 条件数 & 方向保持 \\
+\hline
+$\|\Delta W\|_F \le \eta$（$\ell_2$） & $-\eta G/\|G\|_F$ & $6:3:1$ & $6$ & $\checkmark$ \\
+$\|\Delta W\|_\infty \le \eta$（逐元素） & $-\eta\,\text{sign}(G)$ & $\approx 2:2:1$* & $2$ & \textbf{$\times$} \\
+$\|\Delta W\|_2 \le \eta$（谱范数） & $-\eta\,UV^\top$ & $1:1:1$ & $1$ & $\checkmark$ \\
+\hline
+\end{longtable}
+\end{center}
+
+
+*Adam/SignGD的 $\text{sign}(G)$ 的奇异值为 $(2,2,1)$，且其奇异向量与 $G$ 的不同（§7.3已验证 $\text{sign}(G)\text{sign}(G)^\top$ 的特征空间与 $GG^\top$ 不同）。
+
+
+\subsection{SignGD vs 矩阵sign的本质区别}
+
+$\text{sign}_{\text{elem}}(G)$：逐元素取符号。$\ell_\infty$ 约束下的最优解。\textbf{打乱了矩阵的旋转结构}。
+
+$\text{sign}_{\text{matrix}}(G) = UV^\top$：矩阵符号函数（保留奇异向量，奇异值$\to$1）。\textbf{谱范数约束下的最优解。}
+
+在向量上两者一致（$\text{sign}(g) = g/|g|$ 对每个分量）。在矩阵上两者不同——因为逐元素sign不尊重矩阵的行列结构。
+
+
+
+
+\section{Shampoo恒等式：不做SVD也能算 $UV^\top$}
+
+
+\subsection{恒等式}
+
+
+\[(GG^\top)^{-1/4}\,G\,(G^\top G)^{-1/4} = UV^\top\]
+
+
+\subsection{前置知识：矩阵函数}
+
+对称半正定矩阵 $A$ 有特征分解 $A = Q\Lambda Q^\top$（$Q$ 正交，$\Lambda$ 对角非负）。任意幂次 $\alpha$ 定义为：
+
+
+\[A^\alpha = Q\,\Lambda^\alpha\,Q^\top, \quad (\Lambda^\alpha)_{ii} = \lambda_i^\alpha\]
+
+直觉：在特征基下，矩阵幂就是对每个特征值独立取幂。
+
+例如 $A = \begin{pmatrix}4&0\\0&9\end{pmatrix}$：$A^{1/2} = \begin{pmatrix}2&0\\0&3\end{pmatrix}$，$A^{-1/4} = \begin{pmatrix}4^{-1/4}&0\\0&9^{-1/4}\end{pmatrix} = \begin{pmatrix}0.707&0\\0&0.577\end{pmatrix}$。
+
+非对角矩阵也一样——先旋转到特征基，取幂，旋转回来。
+
+
+\subsection{逐步证明}
+
+设 $G \in \mathbb{R}^{m \times n}$，SVD为 $G = U\Sigma V^\top$。
+
+**Step 1：计算 $GG^\top$ 及其 $-1/4$ 次幂**
+
+
+\[GG^\top = (U\Sigma V^\top)(V\Sigma^\top U^\top) = U\Sigma\Sigma^\top U^\top = U\,\text{diag}(\sigma_1^2, \ldots, \sigma_m^2)\,U^\top\]
+
+（$\Sigma\Sigma^\top$ 是 $m \times m$ 对角阵，对角元素 $= \sigma_i^2$。$V^\top V = I$ 因为 $V$ 列正交。）
+
+$GG^\top$ 的特征分解已知：特征向量 $= U$ 的列，特征值 $= \sigma_i^2$。所以：
+
+
+\[(GG^\top)^{-1/4} = U\,\text{diag}(\sigma_1^{2 \times (-1/4)}, \ldots)\,U^\top = U\,\text{diag}(\sigma_1^{-1/2}, \ldots, \sigma_m^{-1/2})\,U^\top\]
+
+在我们例子上（$\sigma = (6, 3, 1)$）：
+
+
+\[(GG^\top)^{-1/4} = U\,\text{diag}(6^{-1/2},\, 3^{-1/2},\, 1^{-1/2})\,U^\top = U\,\text{diag}(0.408,\, 0.577,\, 1)\,U^\top\]
+
+**Step 2：计算 $G^\top G$ 及其 $-1/4$ 次幂**
+
+
+\[G^\top G = V\Sigma^\top\Sigma V^\top = V\,\text{diag}(\sigma_1^2, \ldots, \sigma_n^2)\,V^\top\]
+
+（如果 $m < n$，多出的 $\sigma_i = 0$。$U^\top U = I$ 因为 $U$ 列正交。）
+
+
+\[(G^\top G)^{-1/4} = V\,\text{diag}(\sigma_1^{-1/2}, \ldots, \sigma_r^{-1/2}, 0, \ldots)\,V^\top\]
+
+在我们例子上（$r = 3, n = 4$）：
+
+
+\[(G^\top G)^{-1/4} = V\,\text{diag}(0.408,\, 0.577,\, 1,\, 0)\,V^\top\]
+
+\textbf{Step 3：三个矩阵相乘}
+
+
+\[(GG^\top)^{-1/4} \cdot G \cdot (G^\top G)^{-1/4}\]
+
+
+\[= \left[U\,\text{diag}(\sigma_i^{-1/2})\,U^\top\right] \cdot \left[U\,\text{diag}(\sigma_i)\,V^\top\right] \cdot \left[V\,\text{diag}(\sigma_i^{-1/2})\,V^\top\right]\]
+
+逐步合并（利用 $U^\top U = I$，$V^\top V = I$）：
+
+
+\[= U\,\text{diag}(\sigma_i^{-1/2})\,\underbrace{U^\top U}_{I}\,\text{diag}(\sigma_i)\,\underbrace{V^\top V}_{I}\,\text{diag}(\sigma_i^{-1/2})\,V^\top\]
+
+
+\[= U\,\underbrace{\text{diag}(\sigma_i^{-1/2})\,\text{diag}(\sigma_i)\,\text{diag}(\sigma_i^{-1/2})}_{\text{对角阵相乘}}\,V^\top\]
+
+对角阵相乘就是逐元素乘：$\sigma_i^{-1/2} \cdot \sigma_i \cdot \sigma_i^{-1/2} = \sigma_i^{-1/2+1-1/2} = \sigma_i^0 = 1$。
+
+
+\[= U\,\text{diag}(1, 1, 1)\,V^\top = UV^\top \quad \square\]
+
+
+\subsection{在我们例子上逐元素验证}
+
+$\sigma_1 = 6$：$6^{-1/2} \cdot 6 \cdot 6^{-1/2} = \frac{1}{\sqrt{6}} \cdot 6 \cdot \frac{1}{\sqrt{6}} = \frac{6}{6} = 1$ ✓
+
+$\sigma_2 = 3$：$3^{-1/2} \cdot 3 \cdot 3^{-1/2} = \frac{3}{3} = 1$ ✓
+
+$\sigma_3 = 1$：$1^{-1/2} \cdot 1 \cdot 1^{-1/2} = 1$ ✓
+
+\textbf{每个奇异值被"左右夹击"消去了。} $-1/4$ 次幂从左右各贡献 $\sigma^{-1/2}$，加上中间 $G$ 自带的 $\sigma^1$，总幂次 $= -1/2 + 1 + (-1/2) = 0$。
+
+
+\subsection{一般幂次 $p$}
+
+如果用 $(GG^\top)^{-p}G(G^\top G)^{-p}$，每个奇异值的总幂次变为：
+
+
+\[\sigma_i^{-2p} \cdot \sigma_i^1 \cdot \sigma_i^{-2p} = \sigma_i^{1-4p}\]
+
+（$GG^\top$ 的特征值是 $\sigma^2$，取 $-p$ 次幂得 $\sigma^{-2p}$。左右各一个 $-2p$，中间一个 $+1$。）
+
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|l|l|}
+\hline
+$p$ & 奇异值变换 $\sigma \to$ & $\sigma_1=6$ & $\sigma_2=3$ & $\sigma_3=1$ & 效果 \\
+\hline
+$0$ & $\sigma^1$ & $6$ & $3$ & $1$ & SGD（原样） \\
+$1/8$ & $\sigma^{1/2}$ & $2.45$ & $1.73$ & $1$ & 温和压缩 \\
+**$1/4$** & $\sigma^0 = 1$ & **$1$** & **$1$** & **$1$** & **完全均衡 $\to$ $UV^\top$** \\
+$3/8$ & $\sigma^{-1/2}$ & $0.41$ & $0.58$ & $1$ & 频谱反转 \\
+$1/2$ & $\sigma^{-1}$ & $0.17$ & $0.33$ & $1$ & 完全反转（Newton式） \\
+\hline
+\end{longtable}
+\end{center}
+
+
+**$p = 1/4$ 是使 $1 - 4p = 0$ 的唯一解——所有奇异值变为 $\sigma^0 = 1$。**
+
+$p < 1/4$：大奇异值仍然主导（SGD的方向）。$p > 1/4$：小奇异值反而更大（过度补偿）。$p = 1/4$ 恰好在临界点。
+
+
+\subsection{从恒等式到实践}
+
+直接计算 $(GG^\top)^{-1/4}$ 需要对 $m \times m$ 矩阵做特征分解：$O(m^3)$。$(G^\top G)^{-1/4}$ 需要 $O(n^3)$。
+
+两种绕开方式：
+
+\textbf{Shampoo}（Gupta et al., 2018）：不用每步的 $G$，而是用EMA缓存 $L_t \approx \mathbb{E}[GG^\top]$，每 $T$ 步做一次特征分解更新 $L_t^{-1/4}$。好处：统计量更稳定（时间平均降噪）。代价：每 $T$ 步 $O(m^3+n^3)$。
+
+\textbf{Muon}（Jordan et al., 2024）：完全不做特征分解——用Newton-Schulz多项式迭代直接逼近 $UV^\top$（下一节详述）。好处：全matmul，GPU利用率极高。代价：每步 $O(mn\min(m,n))$ 的matmul。
+
+
+
+
+\section{RMS$\to$RMS诱导范数}
+
+
+\subsection{从RMS范数说起}
+
+
+\[\|x\|_{\text{RMS}} = \sqrt{\frac{1}{d}\sum_{i=1}^d x_i^2} = \frac{\|x\|_2}{\sqrt{d}}\]
+
+控制"每个坐标的平均尺度"。与Xavier/He初始化直接相关——保持每层 $\|Wx\|_{\text{RMS}} = O(1)$ 是训练稳定的关键。
+
+
+\subsection{诱导范数的推导}
+
+$\|A\|_{\text{RMS}\to\text{RMS}}$ 是 $A$ 将RMS范数为1的输入映射到输出的最大RMS范数。
+
+设 $A \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$。$\|x\|_{\text{RMS}} = 1$ 意味着 $\|x\|_2 = \sqrt{d_{\text{in}}}$。
+
+
+\[\|A\|_{\text{RMS}\to\text{RMS}} = \max_{\|x\|_{\text{RMS}}=1} \|Ax\|_{\text{RMS}} = \max_{\|x\|_2 = \sqrt{d_{\text{in}}}} \frac{\|Ax\|_2}{\sqrt{d_{\text{out}}}}\]
+
+做变量替换 $x = \sqrt{d_{\text{in}}}\,\hat{x}$（$\|\hat{x}\|_2 = 1$）：
+
+
+\[= \frac{\sqrt{d_{\text{in}}}}{\sqrt{d_{\text{out}}}} \max_{\|\hat{x}\|_2=1} \|A\hat{x}\|_2 = \sqrt{\frac{d_{\text{in}}}{d_{\text{out}}}} \|A\|_2\]
+
+
+\[\boxed{\|A\|_{\text{RMS}\to\text{RMS}} = \sqrt{\frac{d_{\text{in}}}{d_{\text{out}}}} \|A\|_2}\]
+
+
+\subsection{在我们例子上}
+
+$G \in \mathbb{R}^{3 \times 4}$：$d_{\text{out}}=3$，$d_{\text{in}}=4$，$\|G\|_2 = 6$。
+
+
+\[\|G\|_{\text{RMS}\to\text{RMS}} = \sqrt{4/3} \times 6 \approx 6.93\]
+
+验证：取 $x = v_1$（$G$ 的第一右奇异向量），$\|x\|_2 = 1$。RMS输入 $\|x\|_{\text{RMS}} = 1/\sqrt{4} = 0.5$。要让 $\|x\|_{\text{RMS}} = 1$，需要 $x' = 2v_1$。$\|Gx'\|_2 = 12$，$\|Gx'\|_{\text{RMS}} = 12/\sqrt{3} = 6.93$ ✓。
+
+
+\subsection{RMS$\to$RMS约束下的最优更新}
+
+
+\[\Delta W^* = \arg\min_{\|\Delta W\|_{\text{RMS}\to\text{RMS}} \le \eta} \langle G, \Delta W \rangle_F\]
+
+约束等价于 $\|\Delta W\|_2 \le \eta \sqrt{d_{\text{out}}/d_{\text{in}}}$。从§8的结果（谱范数约束下最优解为 $-UV^\top$），直接代入：
+
+
+\[\boxed{\Delta W^* = -\eta\sqrt{\frac{d_{\text{out}}}{d_{\text{in}}}}\,UV^\top}\]
+
+我们例子：$\sqrt{3/4} \approx 0.866$，所以 $\Delta W^* = -0.866\eta\,UV^\top$。
+
+
+\subsection{层形状自动进入缩放因子}
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+层 & $d_{\text{in}}$ & $d_{\text{out}}$ & $\sqrt{d_{\text{out}}/d_{\text{in}}}$ \\
+\hline
+注意力 $W_Q$ & 768 & 64 & $0.29$ \\
+MLP上投影 & 768 & 3072 & $2.0$ \\
+MLP下投影 & 3072 & 768 & $0.5$ \\
+\hline
+\end{longtable}
+\end{center}
+
+
+宽$\to$窄层自动小步长，窄$\to$宽层自动大步长——这是RMS$\to$RMS范数作为"安全性度量"的自然结果。
+
+
+
+
+\section{Muon = 动量 + Newton-Schulz正交化}
+
+
+\subsection{Newton-Schulz迭代}
+
+\textbf{目标}：给定 $G = U\Sigma V^\top$，不做SVD，高效逼近 $UV^\top$。
+
+\textbf{关键性质}：奇多项式 $p$ 作用在矩阵上时，$p(G) = U\,p(\Sigma)\,V^\top$——奇异向量不变，只有奇异值被变换。所以如果 $p(\sigma) \to 1$，则 $p(G) \to UV^\top$。
+
+\textbf{经典NS多项式}：$p(x) = \frac{3}{2}x - \frac{1}{2}x^3$。
+
+验证性质：$p(1) = 1$（不动点），$p'(1) = \frac{3}{2} - \frac{3}{2} = 0$（超线性收敛），$(0,\sqrt{3})$ 上 $p(x) > x$（单调推向1）。
+
+\textbf{矩阵形式}：$X_{k+1} = \frac{1}{2}X_k(3I - X_k^\top X_k)$。全部是矩阵乘法。
+
+
+\subsection{手算}
+
+先归一化 $\hat{G} = G/\|G\|_F$，$\|G\|_F = \sqrt{46} \approx 6.78$。奇异值变为 $\hat\sigma = (0.885, 0.442, 0.147)$。
+
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|l|}
+\hline
+迭代 & $\hat\sigma_1$ & $\hat\sigma_2$ & $\hat\sigma_3$ & 计算（以$\hat\sigma_1$为例） \\
+\hline
+0 & 0.885 & 0.442 & 0.147 & 归一化 \\
+1 & 0.981 & 0.620 & 0.219 & $\frac{3}{2}(0.885)-\frac{1}{2}(0.885)^3 = 1.328-0.347$ \\
+2 & \textbf{1.000} & 0.811 & 0.324 & $\frac{3}{2}(0.981)-\frac{1}{2}(0.981)^3 \approx 1.000$ \\
+3 & 1.000 & 0.950 & 0.469 &  \\
+5 & 1.000 & \textbf{1.000} & 0.839 &  \\
+\hline
+\end{longtable}
+\end{center}
+
+
+$\sigma_1$ 2步收敛，$\sigma_3$ 5步还差——小奇异值（可能是噪声方向）天然得到\textbf{更小的更新幅度}。
+
+
+\subsection{完整算法}
+
+
+\begin{lstlisting}
+for t = 1, 2, ... do
+    G = mini-batch梯度
+    B = μ·B_{t-1} + (1-μ)·G                      # 动量
+    X = B / ‖B‖_F                                 # 归一化 → σ ∈ (0,1]
+    for k = 1..5:  X = X(3I - X^TX)/2             # NS正交化
+    W_{t+1} = W_t - η√(d_out/d_in)·X              # 更新
+\end{lstlisting}
+
+存储 $2\times$（权重+动量缓冲），比Adam的 $3\times$ 少 $1\times$。
+
+
+
+
+
+
+
+\section{总结}
+
+
+
+
+
+
+
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|l|}
+\hline
+范数 & "安全"的含义 & 最优更新 & 条件数 & muP缩放 \\
+\hline
+$\ell_2$ & 参数变化量小 & $-g/\|g\|$ & $\kappa$ & — \\
+$\ell_\infty$ & 每个参数变化量小 & $-\text{sign}(g)$ & $\downarrow$（但方向偏） & $\eta \propto 1/d_{\text{in}}$ \\
+$\|B\|_2$（谱范数） & 对任何输入，输出变化小 & $-UV^\top$ & $1$ & 内建 \\
+$\|B\|_{\text{RMS}\to\text{RMS}}$ & 对RMS=1的输入，输出RMS变化小 & $-\sqrt{d_{\text{out}}/d_{\text{in}}}\,UV^\top$ & $1$ & $\eta$ 不变 \\
+\hline
+\end{longtable}
+\end{center}
+
+
+
+
+
+\begin{insightbox}
+从GD到Muon，"安全的一步"的定义逐步进化：
+
+\textbf{参数空间安全}（$\ell_2$: 参数总变化有界）$\to$ \textbf{逐参数安全}（$\ell_\infty$: 每个参数变化有界）$\to$ \textbf{函数空间安全}（谱范数/RMS$\to$RMS: 对任何输入，层输出变化有界）。
+
+每一步进化都对应一个更强的优化器。
+\end{insightbox}
+
+
+
+
+
+\section{参考文献}
+
+\begin{enumerate}[leftmargin=*,nosep]
+\item Bernstein \& Newhouse (2024). Old optimizer, new norm. *arXiv:2409.20325*.
+\item Gupta et al. (2018). Shampoo. *ICML*.
+\item Jordan et al. (2024). Muon.
+\item Yang et al. (2022). Tensor Programs V (muP).
+\item Kingma \& Ba (2015). Adam. *ICLR*.
+\item Loshchilov \& Hutter (2019). AdamW. *ICLR*.
+
+\end{enumerate}
+
+\end{document}
