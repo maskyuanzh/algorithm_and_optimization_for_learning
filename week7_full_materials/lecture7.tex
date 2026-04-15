@@ -90,6 +90,61 @@ RMS$\to$RMS induced & 缩放后正交集 & $-\sqrt{d_{\text{out}}/d_{\text{in}}}
 $x \in \mathbb{R}^d$（输入），$W \in \mathbb{R}^{m \times d}$（权重），$h \in \mathbb{R}^m$（预激活），$z \in \mathbb{R}^m$（激活后输出）。损失 $L(z)$。
 
 
+\subsection{贯穿全文的例子：三个数据点的线性回归}
+ 
+取线性回归（$\sigma = \text{id}$，$m = 1$，$d = 2$）：$\hat{y} = w^\top x$，$L = \frac{1}{2}\sum_s(\hat{y}_s - y_s)^2$。
+ 
+三个数据点：
+ 
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+样本 & 输入 $x_s$ & 标签 $y_s$ & 含义 \\
+\hline
+$s=1$ & $(2, 1)$ & $5$ & $2w_1 + w_2 \approx 5$ \\
+$s=2$ & $(0, 1)$ & $1$ & $w_2 \approx 1$ \\
+$s=3$ & $(1, 0)$ & $2$ & $w_1 \approx 2$ \\
+\hline
+\end{longtable}
+\end{center}
+ 
+从样本2直接读出 $w_2 = 1$，从样本3读出 $w_1 = 2$。代入样本1验证：$2 \times 2 + 1 = 5$ $\checkmark$。\textbf{三个方程完全相容，$w^* = (2, 1)$ 精确满足所有样本（零噪声）}——这让手算干净。
+ 
+写成矩阵形式：
+ 
+\[X = \begin{pmatrix} \leftarrow x_1^\top \rightarrow \\ \leftarrow x_2^\top \rightarrow \\ \leftarrow x_3^\top \rightarrow \end{pmatrix} = \begin{pmatrix}2&1\\0&1\\1&0\end{pmatrix}, \quad y = \begin{pmatrix}5\\1\\2\end{pmatrix}\]
+ 
+Hessian和最优点：
+ 
+\[H = X^\top X = \begin{pmatrix}5&2\\2&2\end{pmatrix}, \quad w^* = (X^\top X)^{-1}X^\top y = \begin{pmatrix}2\\1\end{pmatrix}\]
+ 
+特征分解：$\lambda_1 = 6, \lambda_2 = 1$，$\kappa = 6$。初始点 $w_0 = (-1, 3)$。
+ 
+\subsection{逐样本算梯度}
+ 
+每个样本的残差 $\delta_s = w_0^\top x_s - y_s$，梯度 $= \delta_s \cdot x_s$（秩1外积）：
+ 
+\begin{center}\small
+\begin{longtable}{|l|l|l|l|}
+\hline
+样本 & $w_0^\top x_s$ & $\delta_s$ & $\delta_s \cdot x_s$ \\
+\hline
+1 & $(-1)(2)+(3)(1) = 1$ & $1-5 = -4$ & $(-8, -4)$ \\
+2 & $(-1)(0)+(3)(1) = 3$ & $3-1 = 2$ & $(0, 2)$ \\
+3 & $(-1)(1)+(3)(0) = -1$ & $-1-2 = -3$ & $(-3, 0)$ \\
+\hline
+\end{longtable}
+\end{center}
+ 
+每个 $\delta_s x_s$ 是\textbf{秩1}（一个标量 $\times$ 一个向量 $=$ 一个方向）。
+ 
+Full-batch梯度 $=$ 三个求和：
+ 
+\[g = (-8,-4) + (0,2) + (-3,0) = (-11, -2)\]
+ 
+等价的矩阵写法 $g = X^\top(Xw_0 - y)$，或者用 $H(w_0-w^*) = \begin{pmatrix}5&2\\2&2\end{pmatrix}\begin{pmatrix}-3\\2\end{pmatrix} = \begin{pmatrix}-11\\-2\end{pmatrix}$（二次函数上三者等价）。
+
+ 
 \subsection{梯度：秩1外积}
 
 链式法则：
